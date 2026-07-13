@@ -181,6 +181,43 @@ function nextSiblingOf(parent: TuiElement, node: TuiElement): TuiElement | null 
 }
 
 /**
+ * Return the depth of `target` within `root`'s Container subtree, or 0
+ * if `target` is not a descendant.
+ *
+ * Depth 1 means `target` is a direct child of `root` (i.e.
+ * `root.children.includes(target)`). Higher depths correspond to
+ * deeper nesting through Container intermediaries. Non-Container
+ * components have no children and contribute no descendants.
+ *
+ * Used by {@link TUI.findComponentNodeInEngine} to resolve a
+ * {@link Focusable} component nested inside a {@link Container} (e.g.
+ * an Editor inside an `editorContainer`) to its nearest ancestor
+ * wrapper node, so the FocusManager can focus that wrapper and the
+ * bridge-captured {@link TuiElement.legacyCursor} is read for IME
+ * cursor positioning.
+ */
+function containerDepthOf(root: Component, target: Component): number {
+	if (root === target) return 0;
+	if (!isContainer(root)) return 0;
+	const stack: { component: Component; depth: number }[] = root.children.map((c) => ({ component: c, depth: 1 }));
+	while (stack.length > 0) {
+		const { component, depth } = stack.pop()!;
+		if (component === target) return depth;
+		if (isContainer(component)) {
+			for (const child of component.children) {
+				stack.push({ component: child, depth: depth + 1 });
+			}
+		}
+	}
+	return 0;
+}
+
+/** Type guard: a Component is a Container if it has a `children` array. */
+function isContainer(component: Component): component is Component & { children: Component[] } {
+	return "children" in component && Array.isArray((component as { children: unknown }).children);
+}
+
+/**
  * Options for overlay positioning and sizing.
  * Values can be absolute numbers or percentage strings (e.g., "50%").
  */
@@ -356,7 +393,17 @@ export class TUI extends Container {
 	// deferred (see renderWithNewEngine).
 	private newEngine: TuiEngine | null = null;
 	private useNewEngine: boolean = process.env.PI_USE_NEW_TUI_ENGINE === "1";
-	private bridgeWrappers: WeakMap<Component, TuiElement> = new WeakMap();
+	/**
+	 * Cache of legacy Component → ink-legacy wrapper TuiElement.
+	 *
+	 * A regular `Map` rather than `WeakMap` so that
+	 * {@link findComponentNodeInEngine} can iterate entries to resolve a
+	 * nested component to its nearest ancestor wrapper (e.g. an Editor
+	 * inside an `editorContainer`). Entries are pruned in
+	 * {@link syncChildrenToEngine}'s remove pass when the component is
+	 * no longer in `children`, preventing unbounded growth.
+	 */
+	private bridgeWrappers: Map<Component, TuiElement> = new Map();
 	// Map of legacy overlay stack entries to new engine overlay handles.
 	// Kept in sync with overlayStack by syncOverlaysToEngine.
 	private overlayHandles: Map<OverlayStackEntry, NewOverlayHandle> = new Map();
@@ -1736,6 +1783,12 @@ export class TUI extends Container {
 			const component = existing.component;
 			if (component !== undefined && !this.children.includes(component)) {
 				this.newEngine.removeChild(root, existing);
+				// Prune the bridgeWrappers cache entry so the Map does not
+				// grow unbounded across many add/remove cycles. Without
+				// this, the wrapper (and its yogaNode) would leak until the
+				// component itself was GC'd — which may never happen for
+				// long-lived Container components retained by the caller.
+				this.bridgeWrappers.delete(component);
 			}
 		}
 		// Reconcile order: walk children in reverse, using insertBefore
@@ -1860,19 +1913,45 @@ export class TUI extends Container {
 	/**
 	 * Find the backing {@link TuiElement} for a component in the new engine.
 	 *
-	 * Checks {@link bridgeWrappers} (direct children of the root) first,
-	 * then {@link overlayHandles} (overlay components). Returns
-	 * `undefined` if the component is null or has no DOM node in the new
-	 * engine (e.g. nested inside a Container).
+	 * Lookup order:
+	 * 1. {@link bridgeWrappers} — direct match if the component is a
+	 *    top-level child of the TUI root.
+	 * 2. {@link bridgeWrappers} again — recursive descent: if the
+	 *    component is nested inside a {@link Container} (e.g. an Editor
+	 *    inside an `editorContainer`), return the wrapper of the nearest
+	 *    ancestor Container that has a DOM node. The bridge's
+	 *    {@link renderLegacy} paint pass walks the Container's
+	 *    `render(width)` and captures any {@link CURSOR_MARKER} emitted
+	 *    by a nested {@link Focusable} onto the wrapper's
+	 *    {@link TuiElement.legacyCursor}, so the ancestor's node is the
+	 *    correct focus target for IME cursor positioning.
+	 * 3. {@link overlayHandles} — overlay components.
+	 *
+	 * Returns `undefined` only if the component is `null` and no
+	 * ancestor wrapper exists (e.g. before the first
+	 * {@link syncChildrenToEngine} pass).
 	 */
 	private findComponentNodeInEngine(component: Component | null): TuiElement | undefined {
 		if (component === null) return undefined;
+		// 1) Direct match: component is a top-level child.
 		const wrapperNode = this.bridgeWrappers.get(component);
 		if (wrapperNode !== undefined) return wrapperNode;
+		// 2) Overlay component.
 		for (const [entry, handle] of this.overlayHandles) {
 			if (entry.component === component) return handle.node;
 		}
-		return undefined;
+		// 3) Nested inside a Container: walk bridgeWrappers and descend
+		// into each Container's children tree. The nearest ancestor
+		// Container wins (shallowest depth), so that the legacyCursor
+		// captured on its wrapper is the most precise position.
+		let best: { node: TuiElement; depth: number } | undefined;
+		for (const [rootComponent, rootNode] of this.bridgeWrappers) {
+			const depth = containerDepthOf(rootComponent, component);
+			if (depth > 0 && (best === undefined || depth < best.depth)) {
+				best = { node: rootNode, depth };
+			}
+		}
+		return best?.node;
 	}
 
 	/**
