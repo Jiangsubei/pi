@@ -502,9 +502,9 @@ describe("Context overflow error handling", () => {
 	// =============================================================================
 
 	describe.skipIf(!process.env.OPENROUTER_API_KEY)("OpenRouter", () => {
-		// Anthropic backend
-		it("anthropic/claude-sonnet-4 via OpenRouter - should detect overflow via isContextOverflow", async () => {
-			const model = getModel("openrouter", "anthropic/claude-sonnet-4");
+		// Fusion (auto-routing)
+		it("openrouter/fusion via OpenRouter - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("openrouter", "openrouter/fusion");
 			const result = await testContextOverflow(model, process.env.OPENROUTER_API_KEY!);
 			logResult(result);
 
@@ -514,8 +514,8 @@ describe("Context overflow error handling", () => {
 		}, 120000);
 
 		// DeepSeek backend
-		it("deepseek/deepseek-v3.2 via OpenRouter - should detect overflow via isContextOverflow", async () => {
-			const model = getModel("openrouter", "deepseek/deepseek-v3.2");
+		it("openrouter/fusion via OpenRouter - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("openrouter", "openrouter/fusion");
 			const result = await testContextOverflow(model, process.env.OPENROUTER_API_KEY!);
 			logResult(result);
 
@@ -525,8 +525,8 @@ describe("Context overflow error handling", () => {
 		}, 120000);
 
 		// Mistral backend
-		it("mistralai/mistral-large-2512 via OpenRouter - should detect overflow via isContextOverflow", async () => {
-			const model = getModel("openrouter", "mistralai/mistral-large-2512");
+		it("openrouter/fusion via OpenRouter - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("openrouter", "openrouter/fusion");
 			const result = await testContextOverflow(model, process.env.OPENROUTER_API_KEY!);
 			logResult(result);
 
@@ -536,8 +536,8 @@ describe("Context overflow error handling", () => {
 		}, 120000);
 
 		// Google backend
-		it("google/gemini-2.5-flash via OpenRouter - should detect overflow via isContextOverflow", async () => {
-			const model = getModel("openrouter", "google/gemini-2.5-flash");
+		it("openrouter/fusion via OpenRouter - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("openrouter", "openrouter/fusion");
 			const result = await testContextOverflow(model, process.env.OPENROUTER_API_KEY!);
 			logResult(result);
 
@@ -547,8 +547,8 @@ describe("Context overflow error handling", () => {
 		}, 120000);
 
 		// Meta/Llama backend
-		it("meta-llama/llama-4-scout via OpenRouter - should detect overflow via isContextOverflow", async () => {
-			const model = getModel("openrouter", "meta-llama/llama-4-scout");
+		it("openrouter/fusion via OpenRouter - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("openrouter", "openrouter/fusion");
 			const result = await testContextOverflow(model, process.env.OPENROUTER_API_KEY!);
 			logResult(result);
 

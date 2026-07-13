@@ -152,8 +152,8 @@ describe("openai-completions cacheControlFormat", () => {
 		expectAnthropicCacheMarkers(params);
 	});
 
-	it("preserves Anthropic-style cache markers for OpenRouter Anthropic models", async () => {
-		const model = getModel("openrouter", "anthropic/claude-sonnet-4");
+	it("preserves Anthropic-style cache markers for OpenRouter models", async () => {
+		const model = getModel("openrouter", "openrouter/fusion");
 		const params = await capturePayload(model);
 		expectAnthropicCacheMarkers(params);
 	});

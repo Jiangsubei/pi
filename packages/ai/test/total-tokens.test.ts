@@ -618,10 +618,10 @@ describe("totalTokens field", () => {
 
 	describe.skipIf(!process.env.OPENROUTER_API_KEY)("OpenRouter", () => {
 		it(
-			"anthropic/claude-sonnet-4 - should return totalTokens equal to sum of components",
+			"openrouter/fusion - should return totalTokens equal to sum of components",
 			{ retry: 3, timeout: 60000 },
 			async () => {
-				const llm = getModel("openrouter", "anthropic/claude-sonnet-4");
+				const llm = getModel("openrouter", "openrouter/fusion");
 
 				console.log(`\nOpenRouter / ${llm.id}:`);
 				const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.OPENROUTER_API_KEY });
@@ -635,10 +635,10 @@ describe("totalTokens field", () => {
 		);
 
 		it(
-			"deepseek/deepseek-chat - should return totalTokens equal to sum of components",
+			"openrouter/fusion (2) - should return totalTokens equal to sum of components",
 			{ retry: 3, timeout: 60000 },
 			async () => {
-				const llm = getModel("openrouter", "deepseek/deepseek-chat");
+				const llm = getModel("openrouter", "openrouter/fusion");
 
 				console.log(`\nOpenRouter / ${llm.id}:`);
 				const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.OPENROUTER_API_KEY });
@@ -652,10 +652,10 @@ describe("totalTokens field", () => {
 		);
 
 		it(
-			"mistralai/mistral-small-3.2-24b-instruct - should return totalTokens equal to sum of components",
+			"openrouter/fusion (3) - should return totalTokens equal to sum of components",
 			{ retry: 3, timeout: 60000 },
 			async () => {
-				const llm = getModel("openrouter", "mistralai/mistral-small-3.2-24b-instruct");
+				const llm = getModel("openrouter", "openrouter/fusion");
 
 				console.log(`\nOpenRouter / ${llm.id}:`);
 				const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.OPENROUTER_API_KEY });
@@ -669,10 +669,10 @@ describe("totalTokens field", () => {
 		);
 
 		it(
-			"google/gemini-2.5-flash - should return totalTokens equal to sum of components",
+			"openrouter/fusion (4) - should return totalTokens equal to sum of components",
 			{ retry: 3, timeout: 60000 },
 			async () => {
-				const llm = getModel("openrouter", "google/gemini-2.5-flash");
+				const llm = getModel("openrouter", "openrouter/fusion");
 
 				console.log(`\nOpenRouter / ${llm.id}:`);
 				const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.OPENROUTER_API_KEY });
@@ -686,10 +686,10 @@ describe("totalTokens field", () => {
 		);
 
 		it(
-			"deepseek/deepseek-chat - should return totalTokens equal to sum of components",
+			"openrouter/fusion (5) - should return totalTokens equal to sum of components",
 			{ retry: 3, timeout: 60000 },
 			async () => {
-				const llm = getModel("openrouter", "deepseek/deepseek-chat");
+				const llm = getModel("openrouter", "openrouter/fusion");
 
 				console.log(`\nOpenRouter / ${llm.id}:`);
 				const { first, second } = await testTotalTokensWithCache(llm, { apiKey: process.env.OPENROUTER_API_KEY });

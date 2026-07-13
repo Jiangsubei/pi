@@ -810,8 +810,8 @@ describe("Generate E2E Tests", () => {
 		});
 	});
 
-	describe.skipIf(!process.env.OPENROUTER_API_KEY)("OpenRouter Provider (glm-4.5v via OpenAI Completions)", () => {
-		const llm = getModel("openrouter", "z-ai/glm-4.5v");
+	describe.skipIf(!process.env.OPENROUTER_API_KEY)("OpenRouter Provider (auto via OpenAI Completions)", () => {
+		const llm = getModel("openrouter", "auto");
 
 		it("should complete basic text generation", { retry: 3 }, async () => {
 			await basicTextGeneration(llm);
