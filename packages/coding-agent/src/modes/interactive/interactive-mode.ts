@@ -340,6 +340,7 @@ export interface InteractiveModeOptions {
 export class InteractiveMode {
 	private runtimeHost: AgentSessionRuntime;
 	private ui: TUI;
+	private contentContainer: Container;
 	private loadedResourcesContainer: Container;
 	private chatContainer: Container;
 	private pendingMessagesContainer: Container;
@@ -494,6 +495,13 @@ export class InteractiveMode {
 		this.headerContainer = new Container();
 		this.loadedResourcesContainer = new Container();
 		this.chatContainer = new Container();
+		// A single waterfall container that holds everything above the fixed
+		// bottom bar (header, loaded resources, chat history). It is hosted in
+		// a scroll-box so the entire area can be scrolled with the mouse wheel.
+		this.contentContainer = new Container();
+		this.contentContainer.addChild(this.headerContainer);
+		this.contentContainer.addChild(this.loadedResourcesContainer);
+		this.contentContainer.addChild(this.chatContainer);
 		this.pendingMessagesContainer = new Container();
 		this.statusContainer = new Container();
 		this.widgetContainerAbove = new Container();
@@ -737,12 +745,15 @@ export class InteractiveMode {
 			console.log(theme.fg("dim", `Model scope: ${modelList}${cycleHint}`));
 		}
 
-		// Add header container as first child. Populate it after applying theme settings.
-		// Keep loaded resources before chat so restored session messages never precede them.
-		this.ui.addChild(this.headerContainer);
-		this.ui.addChild(this.loadedResourcesContainer);
-
-		this.ui.addChild(this.chatContainer);
+		// Host the entire waterfall (header, loaded resources, chat history) in
+		// a scroll-box under the new engine. Only the bottom bar (editor,
+		// footer, status widgets) stays fixed. When the legacy engine is active,
+		// createScrollBoxForComponent returns undefined and falls back to a
+		// plain addChild of the waterfall container.
+		const contentScrollBox = this.ui.createScrollBoxForComponent(this.contentContainer);
+		if (contentScrollBox === undefined) {
+			this.ui.addChild(this.contentContainer);
+		}
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.statusContainer);
 		this.renderWidgets(); // Initialize with default spacer
