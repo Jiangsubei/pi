@@ -4,8 +4,8 @@
  * Parses the SGR-1006 mouse format emitted by terminals when DECSET
  * 1006 is active (enabled by {@link Terminal.enableMouseMode}):
  *
- *   `\x1b[<button;col;row;M`  press / motion (button held)
- *   `\x1b[<button;col;row;m`  release
+ *   `\x1b[<button;col;rowM`  press / motion (button held)
+ *   `\x1b[<button;col;rowm`  release
  *
  * `button` packs the button code, modifier flags, and event-type bits:
  *   bit 0-1  button code (0=left, 1=middle, 2=right, 3=other)
@@ -35,8 +35,12 @@ const CTRL_BIT = 16; // bit 4
 const MOTION_BIT = 32; // bit 5
 const WHEEL_BIT = 64; // bit 6: wheel event flag (button code 0=up, 1=down)
 
-// Matches \x1b[<button;col;row;M or \x1b[<button;col;row;m
-const SGR_MOUSE_REGEX = /^\x1b\[<(\d+);(\d+);(\d+);([Mm])$/;
+// Matches the SGR-1006 mouse format: \x1b[<button;col;rowM (press/motion)
+// or \x1b[<button;col;rowm (release). Note: NO semicolon between row and
+// the trailing M/m — the row parameter is immediately followed by the
+// event-type byte. (Prior version erroneously required a 3rd semicolon,
+// which only matched malformed test fixtures, never real terminal output.)
+const SGR_MOUSE_REGEX = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
 
 /**
  * Parse an SGR-1006 mouse sequence into a {@link MouseEvent}.

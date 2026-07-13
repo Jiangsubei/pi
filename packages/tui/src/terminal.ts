@@ -108,6 +108,7 @@ export class ProcessTerminal implements Terminal {
 	private _kittyProtocolActive = false;
 	private _modifyOtherKeysActive = false;
 	private _mouseModeEnabled = false;
+	private alternateScreenActive = false;
 	private keyboardProtocolPushed = false;
 	private keyboardProtocolNegotiationBuffer = "";
 	private keyboardProtocolBufferFlushTimer?: ReturnType<typeof setTimeout>;
@@ -142,7 +143,7 @@ export class ProcessTerminal implements Terminal {
 	 * - 1000: enable mouse reporting
 	 * - 1002: button-event tracking (report on press/release)
 	 * - 1003: any-event tracking (report on motion too)
-	 * - 1006: SGR pixel format (\x1b[<button;col;row;M/m)
+	 * - 1006: SGR pixel format (\x1b[<button;col;rowM/m)
 	 */
 	enableMouseMode(): void {
 		process.stdout.write("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
@@ -190,6 +191,11 @@ export class ProcessTerminal implements Terminal {
 
 		// Enable bracketed paste mode - terminal will wrap pastes in \x1b[200~ ... \x1b[201~
 		process.stdout.write("\x1b[?2004h");
+
+		// Enter the alternate screen buffer to disable the terminal's
+		// native scrollbar and keep Pi's own scroll-box in full control.
+		process.stdout.write("\x1b[?1049h");
+		this.alternateScreenActive = true;
 
 		// Set up resize handler immediately
 		process.stdout.on("resize", this.resizeHandler);
@@ -455,6 +461,13 @@ export class ProcessTerminal implements Terminal {
 
 		// Disable bracketed paste mode
 		process.stdout.write("\x1b[?2004l");
+
+		// Leave the alternate screen buffer, restoring the terminal's
+		// main buffer and native scrollbar.
+		if (this.alternateScreenActive) {
+			process.stdout.write("\x1b[?1049l");
+			this.alternateScreenActive = false;
+		}
 
 		// Disable mouse reporting if it was enabled
 		if (this._mouseModeEnabled) {

@@ -22,7 +22,8 @@ import { VirtualTerminal } from "./virtual-terminal.ts";
 
 describe("parseMouseSequence", () => {
 	it("parses left button press", () => {
-		const event = parseMouseSequence("\x1b[<0;10;5;M");
+		// SGR-1006 format: ESC[<button;col;rowM (no semicolon before M)
+		const event = parseMouseSequence("\x1b[<0;10;5M");
 		assert.ok(event !== null);
 		assert.strictEqual(event!.type, "mousedown");
 		assert.strictEqual(event!.button, 0);
@@ -34,28 +35,28 @@ describe("parseMouseSequence", () => {
 	});
 
 	it("parses right button press", () => {
-		const event = parseMouseSequence("\x1b[<2;10;5;M");
+		const event = parseMouseSequence("\x1b[<2;10;5M");
 		assert.ok(event !== null);
 		assert.strictEqual(event!.type, "mousedown");
 		assert.strictEqual(event!.button, 2);
 	});
 
 	it("parses middle button press", () => {
-		const event = parseMouseSequence("\x1b[<1;10;5;M");
+		const event = parseMouseSequence("\x1b[<1;10;5M");
 		assert.ok(event !== null);
 		assert.strictEqual(event!.type, "mousedown");
 		assert.strictEqual(event!.button, 1);
 	});
 
 	it("parses release as mouseup", () => {
-		const event = parseMouseSequence("\x1b[<0;10;5;m");
+		const event = parseMouseSequence("\x1b[<0;10;5m");
 		assert.ok(event !== null);
 		assert.strictEqual(event!.type, "mouseup");
 		assert.strictEqual(event!.button, 0);
 	});
 
 	it("parses shift modifier", () => {
-		const event = parseMouseSequence("\x1b[<4;10;5;M");
+		const event = parseMouseSequence("\x1b[<4;10;5M");
 		assert.ok(event !== null);
 		assert.strictEqual(event!.shiftKey, true);
 		assert.strictEqual(event!.altKey, false);
@@ -64,7 +65,7 @@ describe("parseMouseSequence", () => {
 	});
 
 	it("parses alt modifier", () => {
-		const event = parseMouseSequence("\x1b[<8;10;5;M");
+		const event = parseMouseSequence("\x1b[<8;10;5M");
 		assert.ok(event !== null);
 		assert.strictEqual(event!.altKey, true);
 		assert.strictEqual(event!.shiftKey, false);
@@ -73,7 +74,7 @@ describe("parseMouseSequence", () => {
 	});
 
 	it("parses ctrl modifier", () => {
-		const event = parseMouseSequence("\x1b[<16;10;5;M");
+		const event = parseMouseSequence("\x1b[<16;10;5M");
 		assert.ok(event !== null);
 		assert.strictEqual(event!.ctrlKey, true);
 		assert.strictEqual(event!.shiftKey, false);
@@ -83,7 +84,7 @@ describe("parseMouseSequence", () => {
 
 	it("parses combined modifiers (shift+alt+ctrl)", () => {
 		// 4 + 8 + 16 = 28
-		const event = parseMouseSequence("\x1b[<28;10;5;M");
+		const event = parseMouseSequence("\x1b[<28;10;5M");
 		assert.ok(event !== null);
 		assert.strictEqual(event!.shiftKey, true);
 		assert.strictEqual(event!.altKey, true);
@@ -91,14 +92,14 @@ describe("parseMouseSequence", () => {
 	});
 
 	it("parses wheel up as mousewheel with deltaY -1", () => {
-		const event = parseMouseSequence("\x1b[<64;10;5;M");
+		const event = parseMouseSequence("\x1b[<64;10;5M");
 		assert.ok(event !== null);
 		assert.strictEqual(event!.type, "mousewheel");
 		assert.strictEqual(event!.deltaY, -1);
 	});
 
 	it("parses wheel down as mousewheel with deltaY 1", () => {
-		const event = parseMouseSequence("\x1b[<65;10;5;M");
+		const event = parseMouseSequence("\x1b[<65;10;5M");
 		assert.ok(event !== null);
 		assert.strictEqual(event!.type, "mousewheel");
 		assert.strictEqual(event!.deltaY, 1);
@@ -106,14 +107,14 @@ describe("parseMouseSequence", () => {
 
 	it("parses motion (drag) as mousemove", () => {
 		// 32 = motion flag + 0 = left button held
-		const event = parseMouseSequence("\x1b[<32;10;5;M");
+		const event = parseMouseSequence("\x1b[<32;10;5M");
 		assert.ok(event !== null);
 		assert.strictEqual(event!.type, "mousemove");
 		assert.strictEqual(event!.button, 0);
 	});
 
 	it("converts 1-based coordinates to 0-based", () => {
-		const event = parseMouseSequence("\x1b[<0;1;1;M");
+		const event = parseMouseSequence("\x1b[<0;1;1M");
 		assert.ok(event !== null);
 		assert.strictEqual(event!.col, 0);
 		assert.strictEqual(event!.row, 0);
@@ -126,12 +127,14 @@ describe("parseMouseSequence", () => {
 	});
 
 	it("returns null for malformed SGR sequence", () => {
-		assert.strictEqual(parseMouseSequence("\x1b[<abc;1;2;M"), null);
-		assert.strictEqual(parseMouseSequence("\x1b[<0;1;2;X"), null);
+		// Malformed: non-digit button field.
+		assert.strictEqual(parseMouseSequence("\x1b[<abc;1;2M"), null);
+		// Malformed: wrong terminating byte.
+		assert.strictEqual(parseMouseSequence("\x1b[<0;1;2X"), null);
 	});
 
 	it("returns MouseEvent with null target", () => {
-		const event = parseMouseSequence("\x1b[<0;10;5;M");
+		const event = parseMouseSequence("\x1b[<0;10;5M");
 		assert.ok(event !== null);
 		assert.strictEqual(event!.target, null);
 		assert.ok(event instanceof MouseEvent);
@@ -228,7 +231,7 @@ describe("TuiEngine.handleInput: mouse dispatch", () => {
 		});
 
 		// col=3 (1-based 4), row=2 (1-based 3) → inside target
-		engine.handleInput("\x1b[<0;4;3;M");
+		engine.handleInput("\x1b[<0;4;3M");
 
 		assert.ok(received !== undefined, "mousedown listener should have been called");
 		assert.strictEqual(received!.type, "mousedown");
@@ -259,8 +262,8 @@ describe("TuiEngine.handleInput: mouse dispatch", () => {
 			upReceived = true;
 		});
 
-		engine.handleInput("\x1b[<0;4;3;M");
-		engine.handleInput("\x1b[<0;4;3;m");
+		engine.handleInput("\x1b[<0;4;3M");
+		engine.handleInput("\x1b[<0;4;3m");
 
 		assert.strictEqual(upReceived, true);
 
@@ -288,8 +291,8 @@ describe("TuiEngine.handleInput: mouse dispatch", () => {
 			clickEvent = e as MouseEvent;
 		});
 
-		engine.handleInput("\x1b[<0;4;3;M");
-		engine.handleInput("\x1b[<0;4;3;m");
+		engine.handleInput("\x1b[<0;4;3M");
+		engine.handleInput("\x1b[<0;4;3m");
 
 		assert.strictEqual(clickCount, 1);
 		assert.ok(clickEvent !== undefined);
@@ -320,9 +323,9 @@ describe("TuiEngine.handleInput: mouse dispatch", () => {
 		targetB.addEventListener("click", () => clickCount++);
 
 		// mousedown on A (col=2, row=1)
-		engine.handleInput("\x1b[<0;3;2;M");
+		engine.handleInput("\x1b[<0;3;2M");
 		// mouseup on B (col=8, row=1)
-		engine.handleInput("\x1b[<0;9;2;m");
+		engine.handleInput("\x1b[<0;9;2m");
 
 		assert.strictEqual(clickCount, 0);
 
@@ -348,7 +351,7 @@ describe("TuiEngine.handleInput: mouse dispatch", () => {
 			received = e as MouseEvent;
 		});
 
-		engine.handleInput("\x1b[<64;4;3;M");
+		engine.handleInput("\x1b[<64;4;3M");
 
 		assert.ok(received !== undefined);
 		assert.strictEqual(received!.type, "mousewheel");
@@ -377,7 +380,7 @@ describe("TuiEngine.handleInput: mouse dispatch", () => {
 		});
 
 		// col=15 (outside child), row=8
-		engine.handleInput("\x1b[<0;16;9;M");
+		engine.handleInput("\x1b[<0;16;9M");
 
 		assert.strictEqual(received, true);
 
@@ -404,7 +407,7 @@ describe("TuiEngine.handleInput: mouse dispatch", () => {
 		});
 
 		// shift+alt+ctrl+left = 4+8+16 = 28
-		engine.handleInput("\x1b[<28;4;3;M");
+		engine.handleInput("\x1b[<28;4;3M");
 
 		assert.ok(received !== undefined);
 		assert.strictEqual(received!.shiftKey, true);
@@ -508,7 +511,7 @@ describe("hit-test + dispatch: overlay preference", () => {
 			overlayCalled = true;
 		});
 
-		engine.handleInput("\x1b[<0;3;3;M");
+		engine.handleInput("\x1b[<0;3;3M");
 
 		assert.strictEqual(overlayCalled, true);
 		assert.strictEqual(normalCalled, false);

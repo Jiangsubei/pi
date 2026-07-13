@@ -114,9 +114,9 @@ describe("p4-integration: mouse click + bubbling", () => {
 			});
 
 			// mousedown at 0-based (2,1) → SGR 1-based (3,2); inside child (0,0,5x3).
-			engine.handleInput("\x1b[<0;3;2;M");
+			engine.handleInput("\x1b[<0;3;2M");
 			// mouseup at same coordinate → synthesizes click on child.
-			engine.handleInput("\x1b[<0;3;2;m");
+			engine.handleInput("\x1b[<0;3;2m");
 
 			assert.strictEqual(childClicks, 1, "child click listener should fire once");
 			assert.strictEqual(parentClicks, 1, "parent click listener should fire via bubbling");
@@ -149,8 +149,8 @@ describe("p4-integration: mouse click + bubbling", () => {
 				parentClicks++;
 			});
 
-			engine.handleInput("\x1b[<0;3;2;M");
-			engine.handleInput("\x1b[<0;3;2;m");
+			engine.handleInput("\x1b[<0;3;2M");
+			engine.handleInput("\x1b[<0;3;2m");
 
 			assert.strictEqual(childClicks, 1, "child listener should still fire on the target");
 			assert.strictEqual(parentClicks, 0, "parent listener should NOT fire after stopPropagation");
@@ -177,14 +177,14 @@ describe("p4-integration: Alt+drag selection + OSC 52", () => {
 
 			// Alt+left mousedown at 0-based (0,0) → SGR 1-based (1,1).
 			// button = 0 (left) + 8 (alt) = 8, terminator M (press).
-			engine.handleInput("\x1b[<8;1;1;M");
+			engine.handleInput("\x1b[<8;1;1M");
 			// Alt+left mousemove (drag) to 0-based (4,0) → SGR 1-based (5,1).
 			// button = 0 + 8 (alt) + 32 (motion) = 40, terminator M.
-			engine.handleInput("\x1b[<40;5;1;M");
+			engine.handleInput("\x1b[<40;5;1M");
 			// mouseup at 0-based (4,0) → SGR 1-based (5,1).
 			// button = 0 + 8 (alt) = 8, terminator m (release).
 			terminal.clearWrites();
-			engine.handleInput("\x1b[<8;5;1;m");
+			engine.handleInput("\x1b[<8;5;1m");
 
 			const osc52 = terminal.findOsc52();
 			assert.ok(osc52 !== undefined, "should emit an OSC 52 sequence on selection end");
