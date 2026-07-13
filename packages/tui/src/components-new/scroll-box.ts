@@ -110,7 +110,15 @@ export function createScrollBox(style?: Styles, engine?: ScrollBoxEngine): Scrol
 		// Accumulate in pendingScrollDelta; renderer drains it at a capped
 		// rate per frame so fast flicks show intermediate frames. Direction
 		// reversal naturally cancels (pure accumulator).
-		node.stickToBottom = false;
+		//
+		// Only scroll *up* (delta<0) clearly abandons the bottom, so clear
+		// stickToBottom. Scrolling *down* (delta>0) leaves it untouched so
+		// the renderer can re-engage sticky when the drain reaches the
+		// bottom — matches Claude Code, where flicking back to the bottom
+		// re-enables auto-follow without an explicit scrollToBottom().
+		if (delta < 0) {
+			node.stickToBottom = false;
+		}
 		node.pendingScrollDelta = (node.pendingScrollDelta ?? 0) + Math.trunc(delta);
 		requestRender();
 	};

@@ -306,6 +306,16 @@ function renderNodeInternal(
 				scrollDrainNodes.delete(node);
 			}
 
+			// Re-engage stickToBottom when the drain finishes at the bottom.
+			// scrollBy only clears stickToBottom on upward (delta<0) input;
+			// downward scrolls leave it untouched so we can detect "flicked
+			// back to bottom" here. Once pendingScrollDelta is fully drained
+			// (undefined) and scrollTop hit maxScroll, turn sticky back on
+			// so subsequent child appends auto-follow. Matches Claude Code.
+			if (node.style.stickyScroll === true && node.pendingScrollDelta === undefined && node.scrollTop >= maxScroll) {
+				node.stickToBottom = true;
+			}
+
 			// Apply virtual-scroll clamp: if scrollTop raced past the
 			// currently-mounted range, render at the edge of mounted
 			// content instead of blank spacer. The clamped value is for
