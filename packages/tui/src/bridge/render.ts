@@ -16,13 +16,14 @@
  * the inner bytes of an escape sequence (`[`, `3`, `1`, `m`, …) would
  * be stamped into cells as visible characters.
  *
- * Per the P2 task spec ("不解析 ANSI 为 styleId（暂时）"), this module
- * does not parse component-emitted ANSI into the {@link StylePool}.
- * Instead it strips ANSI sequences and writes the plain visible text,
- * applying only the inherited {@link TextStyles} from ancestor nodes
- * (via {@link Output.internStyle}). Component-specific styling (e.g.
- * Editor cursor highlight, Text `customBgFn`) is deferred to P5, where
- * the bridge will translate SGR runs into styleId transitions.
+ * The bridge parses SGR sequences into {@link TextStyles} via
+ * {@link AnsiStateTracker}, splits each line into {@link StyledSegment}s
+ * of consistent style, and writes each segment with its own
+ * `styleId` (interned via {@link Output.internStyle}). The diff layer
+ * then emits proper SGR transitions on `styleId` changes, so colors,
+ * bold, italic, etc. are preserved. OSC 8 hyperlinks and unsupported
+ * CSI codes are stripped from the visible text (the cell pipeline
+ * cannot represent them); CURSOR_MARKER is handled separately below.
  *
  * ## CURSOR_MARKER preservation
  *
@@ -48,7 +49,8 @@ import type { TextStyles } from "../dom/types.ts";
 import type { Output } from "../output/output.ts";
 import { isImageLine } from "../terminal-image.ts";
 import { CURSOR_MARKER, extractKittyImageIds } from "../tui.ts";
-import { extractAnsiCode, visibleWidth } from "../utils.ts";
+import { visibleWidth } from "../utils.ts";
+import { AnsiStateTracker, parseAnsiSegments } from "./ansi-state.ts";
 
 // --
 // Public API
@@ -90,11 +92,12 @@ export function renderLegacy(
 
 	const lines = component.render(width);
 
-	// Intern the inherited style once for all lines. StylePool.add is a
-	// dedup map, so repeated calls with the same TextStyles are cheap.
-	const styleId = output.internStyle(inheritedStyle);
-
 	const maxLines = Math.min(lines.length, height);
+	// One tracker per frame, seeded with the inherited style. SGR codes
+	// emitted by the component modify this state across lines (SGR state
+	// persists across newlines in the terminal model), so the same
+	// tracker is reused for all lines.
+	const tracker = AnsiStateTracker.fromInherited(inheritedStyle);
 	for (let lineIdx = 0; lineIdx < maxLines; lineIdx++) {
 		const line = lines[lineIdx];
 		if (line === undefined) {
@@ -131,47 +134,18 @@ export function renderLegacy(
 			continue;
 		}
 
-		// Strip ANSI sequences (CSI/OSC/APC) to get plain visible text.
-		// See module doc for why this is necessary.
-		const plainText = stripAnsiSequences(line);
-
-		// Skip empty lines (no visible content to write).
-		if (plainText.length === 0) {
-			continue;
+		// Split the line into segments of consistent SGR state and write
+		// each segment with its interned styleId. The tracker carries SGR
+		// state across lines (terminal cumulativity), so do NOT reset it
+		// per line. Empty segments (back-to-back escapes) are skipped by
+		// parseAnsiSegments.
+		const segments = parseAnsiSegments(line, tracker);
+		let columnOffset = 0;
+		for (const segment of segments) {
+			if (segment.text.length === 0) continue;
+			const styleId = output.internStyle(segment.style);
+			output.writeText(x + columnOffset, y + lineIdx, segment.text, styleId);
+			columnOffset += visibleWidth(segment.text);
 		}
-
-		output.writeText(x, y + lineIdx, plainText, styleId);
 	}
-}
-
-// --
-// Internal: ANSI stripping
-
-/**
- * Remove all ANSI escape sequences (CSI, OSC, APC) from `text`, leaving
- * only visible characters.
- *
- * Uses {@link extractAnsiCode} to recognize the same sequence types that
- * {@link visibleWidth} strips, so the visible width of the result equals
- * the visible width of the input. Control characters not part of a
- * recognized escape (lone ESC, lone BEL) are left in place —
- * {@link Output.writeText}'s grapheme segmenter skips zero-width
- * control graphemes, so they don't corrupt the cell grid.
- */
-function stripAnsiSequences(text: string): string {
-	if (!text.includes("\x1b")) {
-		return text;
-	}
-	let result = "";
-	let i = 0;
-	while (i < text.length) {
-		const ansi = extractAnsiCode(text, i);
-		if (ansi !== null) {
-			i += ansi.length;
-			continue;
-		}
-		result += text[i];
-		i++;
-	}
-	return result;
 }
