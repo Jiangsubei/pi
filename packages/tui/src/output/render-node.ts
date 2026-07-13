@@ -66,8 +66,8 @@ import { wrapText } from "./wrap-text.ts";
  * The public signature `renderNode(node, output)` is preserved for
  * backward compatibility with the renderer (`diff/renderer.ts`).
  */
-export function renderNode(node: TuiElement, output: Output): void {
-	renderNodeInternal(node, output, {}, 0, 0);
+export function renderNode(node: TuiElement, output: Output, rootOffsetY: number = 0): void {
+	renderNodeInternal(node, output, {}, 0, rootOffsetY);
 }
 
 // --
@@ -103,6 +103,18 @@ function renderNodeInternal(
 		return;
 	}
 	if (width <= 0 || height <= 0) {
+		// Even when the node itself is skipped (zero area), legacy
+		// per-frame state on `ink-legacy` nodes must be reset so stale
+		// data from a previous frame doesn't leak. Without this, a
+		// Kitty image that disappears (component returns [] → measure
+		// height 0 → renderLegacy not called) would keep
+		// `node.legacyKittyImages` populated with the previous frame's
+		// image, and `TuiEngine.emitKittyImages` would still see the
+		// image as "current", never emitting `deleteKittyImage`.
+		if (node.nodeName === "ink-legacy") {
+			node.legacyCursor = undefined;
+			node.legacyKittyImages = undefined;
+		}
 		return;
 	}
 

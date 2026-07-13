@@ -80,6 +80,20 @@ export function createRenderer(): Renderer {
 		rootNode.yogaNode.setWidth(terminalWidth);
 		rootNode.yogaNode.setHeight(terminalHeight);
 
+		// 1b. Legacy `ink-legacy` nodes are opaque to the new engine: their
+		//     internal state (a Container's `children` array, an Editor's
+		//     buffer, a streaming AssistantMessage's content) can change
+		//     without any DOM/Yoga mutation reaching the bridge. Yoga
+		//     caches measured heights and skips re-measure for clean
+		//     (!isDirty_) nodes, so without re-marking legacy wrappers dirty
+		//     before each layout pass, newly-added chat messages or tool
+		//     calls would be rendered by `renderLegacy` but clipped to the
+		//     stale cached height — invisible on screen. This mirrors the
+		//     legacy TUI's behavior of re-rendering every component each
+		//     frame; native (ink-box/ink-text) subtree dirty tracking is
+		//     left intact.
+		markLegacyNodesDirty(rootNode);
+
 		// 2. Calculate layout. Walks the whole Yoga tree and computes
 		//    left/top/width/height for every node.
 		rootNode.yogaNode.calculateLayout();
@@ -92,8 +106,18 @@ export function createRenderer(): Renderer {
 		// 4. Paint the DOM tree into the Output backed by newScreen.
 		//    renderNode walks the tree in document order, queueing fill and
 		//    write operations; flush applies them to the Screen.
+		//
+		//    Legacy bridge layout fix: wrapped components are measured at
+		//    their natural height (flexShrink: 0). When the stacked total
+		//    exceeds the terminal height, Yoga simply clips the overflow
+		//    at the bottom, hiding the newest messages and the editor's
+		//    bottom border. The legacy TUI instead keeps the bottom of the
+		//    output visible and pushes the oldest lines into scrollback.
+		//    Reproduce that by painting the tree with a negative root Y
+		//    offset so the last `terminalHeight` rows land in the viewport.
+		const overflowOffset = computeLegacyOverflowOffset(rootNode, terminalHeight);
 		const output = new Output(newScreen);
-		renderNode(rootNode, output);
+		renderNode(rootNode, output, -overflowOffset);
 		output.flush();
 
 		// 5. Diff against the previous frame. On the first call prevScreen
@@ -251,4 +275,78 @@ function clearDirty(node: TuiElement): void {
 	for (const child of node.childNodes) {
 		clearDirty(child);
 	}
+}
+
+// --
+// Legacy measure cache invalidation
+
+/**
+ * Walk `node`'s subtree depth-first and call `markDirty()` on every
+ * `ink-legacy` wrapper. Legacy components are opaque to the new engine —
+ * their internal state (e.g. a Container's `children` array, an Editor's
+ * buffer, a streaming AssistantMessage's content) can change without any
+ * DOM/Yoga mutation reaching the bridge. Yoga caches measured heights
+ * and skips re-measure for clean (`!isDirty_`) nodes, so without this
+ * pass, newly-added chat messages or tool calls would be rendered by
+ * `renderLegacy` but clipped to the stale cached height — invisible on
+ * screen.
+ *
+ * Called once per render pass, just before `calculateLayout()`. The walk
+ * is O(N) where N is the total node count, and `markDirty` short-circuits
+ * at the first already-dirty ancestor, so the per-frame cost is bounded
+ * by the number of legacy wrappers (typically small: one per top-level
+ * interactive-mode section). Native `ink-box`/`ink-text` subtrees keep
+ * their own dirty tracking intact — only `ink-legacy` nodes are forced
+ * dirty here.
+ *
+ * Note: this means legacy wrappers are always re-measured every frame.
+ * This is intentional and matches the legacy TUI's behavior of re-rendering
+ * every component each frame; the alternative — exposing a bridge-level
+ * "dirty" hook on every Component — would require migrating every legacy
+ * component, defeating the bridge's purpose.
+ */
+function markLegacyNodesDirty(node: TuiElement): void {
+	if (node.nodeName === "ink-legacy") {
+		node.yogaNode.markDirty();
+		// Still descend: a legacy wrapper has no children in the new DOM
+		// model, but the walk is harmless and keeps the helper generic.
+	}
+	for (const child of node.childNodes) {
+		markLegacyNodesDirty(child);
+	}
+}
+
+// --
+// Legacy overflow scrollback emulation
+
+/**
+ * Compute how many rows the painted frame must be shifted down so that
+ * the bottom of the legacy layout stays visible.
+ *
+ * Legacy components wrapped by the new engine are measured at their
+ * natural height. With `flexShrink: 0` on every wrapper, Yoga lays the
+ * sections out from the top and simply clips anything that extends past
+ * the root's fixed height. The legacy TUI instead writes every line to
+ * the terminal and lets the terminal show the last `terminalHeight`
+ * rows (scrollback). To match that behavior in the new engine, we shift
+ * the painted screen down by the overflow amount.
+ *
+ * Only non-absolute root children participate: absolute-positioned
+ * overlays are positioned relative to the viewport and must not be
+ * scrolled.
+ *
+ * Returns 0 when everything fits or when there are no participating
+ * children.
+ */
+function computeLegacyOverflowOffset(rootNode: TuiElement, terminalHeight: number): number {
+	let maxBottom = 0;
+	for (const child of rootNode.childNodes) {
+		// Skip absolute-positioned overlays; they are anchored to the
+		// viewport, not the flow.
+		if (child.style.position === "absolute") continue;
+		const top = Math.round(child.yogaNode.getComputedTop());
+		const height = Math.round(child.yogaNode.getComputedHeight());
+		maxBottom = Math.max(maxBottom, top + height);
+	}
+	return Math.max(0, maxBottom - terminalHeight);
 }

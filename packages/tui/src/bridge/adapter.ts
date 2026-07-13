@@ -46,13 +46,28 @@ import { setLegacyMeasureFunc } from "./measure.ts";
  * by the rendered content during the paint pass via
  * {@link renderLegacy}'s `inheritedStyle` argument.
  *
+ * ## Default `flexShrink: 0`
+ *
+ * When no `flexShrink` is supplied, the wrapper defaults to
+ * `flexShrink: 0`. The legacy TUI renders each top-level component at
+ * its natural measured height and relies on the terminal's scrollback
+ * (or a scroll-box wrapper) for content that exceeds the viewport.
+ * Giving legacy wrappers `flexShrink: 1` would cause Yoga to compress
+ * all sections when the total natural height exceeds the terminal
+ * height, squeezing the editor's bottom border and the latest chat
+ * messages out of the visible area. Callers that explicitly want a
+ * legacy section to shrink may pass `flexShrink: 1`.
+ *
  * @param component - The legacy {@link Component} to wrap.
  * @param style - Optional initial {@link Styles} for the wrapper node.
+ *   `flexShrink` defaults to `0` when not specified.
  * @returns A detached `ink-legacy` {@link TuiElement} with
  *   `node.component === component` and a measure function installed.
  */
 export function wrapComponent(component: Component, style?: Styles): TuiElement {
-	const node = createNode("ink-legacy", style);
+	const resolvedStyle: Styles =
+		style === undefined || style.flexShrink === undefined ? { ...style, flexShrink: 0 } : style;
+	const node = createNode("ink-legacy", resolvedStyle);
 	node.component = component;
 	setLegacyMeasureFunc(node, component);
 	return node;
