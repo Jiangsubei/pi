@@ -64,6 +64,22 @@ export class VirtualTerminal implements Terminal {
 		return true;
 	}
 
+	private mouseModeEnabled = false;
+
+	enableMouseMode(): void {
+		this.mouseModeEnabled = true;
+		this.xterm.write("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
+	}
+
+	disableMouseMode(): void {
+		this.mouseModeEnabled = false;
+		this.xterm.write("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l");
+	}
+
+	isMouseModeEnabled(): boolean {
+		return this.mouseModeEnabled;
+	}
+
 	moveBy(lines: number): void {
 		if (lines > 0) {
 			// Move down

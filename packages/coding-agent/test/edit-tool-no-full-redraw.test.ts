@@ -13,6 +13,7 @@ class FakeTerminal implements Terminal {
 	rows = 24;
 	kittyProtocolActive = true;
 	writes: string[] = [];
+	private _mouseModeEnabled = false;
 
 	start(): void {}
 	stop(): void {}
@@ -28,6 +29,15 @@ class FakeTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(_title: string): void {}
 	setProgress(_active: boolean): void {}
+	enableMouseMode(): void {
+		this._mouseModeEnabled = true;
+	}
+	disableMouseMode(): void {
+		this._mouseModeEnabled = false;
+	}
+	isMouseModeEnabled(): boolean {
+		return this._mouseModeEnabled;
+	}
 
 	get fullClearCount(): number {
 		return this.writes.filter((write) => write.includes("\x1b[2J\x1b[H\x1b[3J")).length;

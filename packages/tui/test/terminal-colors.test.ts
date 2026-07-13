@@ -48,6 +48,12 @@ class TestTerminal implements Terminal {
 		return false;
 	}
 
+	enableMouseMode(): void {}
+	disableMouseMode(): void {}
+	isMouseModeEnabled(): boolean {
+		return false;
+	}
+
 	moveBy(_lines: number): void {}
 
 	hideCursor(): void {}

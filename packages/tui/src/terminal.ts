@@ -74,6 +74,11 @@ export interface Terminal {
 	// Whether Kitty keyboard protocol is active
 	get kittyProtocolActive(): boolean;
 
+	// Enable/disable SGR mouse reporting mode (P4 Task 27)
+	enableMouseMode(): void;
+	disableMouseMode(): void;
+	isMouseModeEnabled(): boolean;
+
 	// Cursor positioning (relative to current position)
 	moveBy(lines: number): void; // Move cursor up (negative) or down (positive) by N lines
 
@@ -102,6 +107,7 @@ export class ProcessTerminal implements Terminal {
 	private resizeHandler?: () => void;
 	private _kittyProtocolActive = false;
 	private _modifyOtherKeysActive = false;
+	private _mouseModeEnabled = false;
 	private keyboardProtocolPushed = false;
 	private keyboardProtocolNegotiationBuffer = "";
 	private keyboardProtocolBufferFlushTimer?: ReturnType<typeof setTimeout>;
@@ -131,7 +137,46 @@ export class ProcessTerminal implements Terminal {
 		return this._modifyOtherKeysActive;
 	}
 
+	/**
+	 * Enable SGR mouse reporting (DECSET 1000, 1002, 1003, 1006).
+	 * - 1000: enable mouse reporting
+	 * - 1002: button-event tracking (report on press/release)
+	 * - 1003: any-event tracking (report on motion too)
+	 * - 1006: SGR pixel format (\x1b[<button;col;row;M/m)
+	 */
+	enableMouseMode(): void {
+		process.stdout.write("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
+		this._mouseModeEnabled = true;
+	}
+
+	/**
+	 * Disable SGR mouse reporting, restoring the terminal to its
+	 * default state. Mirrors {@link enableMouseMode} with DECRST codes.
+	 */
+	disableMouseMode(): void {
+		process.stdout.write("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l");
+		this._mouseModeEnabled = false;
+	}
+
+	isMouseModeEnabled(): boolean {
+		return this._mouseModeEnabled;
+	}
+
 	start(onInput: (data: string) => void, onResize: () => void): void {
+		// Defensive cleanup: if a previous start() registered a stdin handler
+		// that was never paired with stop() (e.g. caller invoked start() twice),
+		// remove it before registering a new one. Without this, each keypress
+		// would be delivered to both the old and new StdinBuffer, doubling
+		// every input event.
+		if (this.stdinDataHandler !== undefined) {
+			process.stdin.removeListener("data", this.stdinDataHandler);
+			this.stdinDataHandler = undefined;
+		}
+		if (this.stdinBuffer !== undefined) {
+			this.stdinBuffer.destroy();
+			this.stdinBuffer = undefined;
+		}
+
 		this.inputHandler = onInput;
 		this.resizeHandler = onResize;
 
@@ -410,6 +455,11 @@ export class ProcessTerminal implements Terminal {
 
 		// Disable bracketed paste mode
 		process.stdout.write("\x1b[?2004l");
+
+		// Disable mouse reporting if it was enabled
+		if (this._mouseModeEnabled) {
+			this.disableMouseMode();
+		}
 
 		const shouldDisableKittyProtocol = this.keyboardProtocolPushed || this._kittyProtocolActive;
 		this.clearKeyboardProtocolNegotiationBuffer();
