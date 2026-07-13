@@ -114,6 +114,35 @@ export class TuiElement {
 	stickToBottom = false;
 
 	/**
+	 * Accumulated scroll delta not yet applied to scrollTop. The renderer
+	 * drains this at a capped rate per frame so fast flicks show
+	 * intermediate frames instead of one big jump. Direction reversal
+	 * naturally cancels (pure accumulator, no target tracking).
+	 *
+	 * `undefined` = no pending delta. Adapted from Claude Code's
+	 * `pendingScrollDelta` on DOMElement.
+	 */
+	pendingScrollDelta: number | undefined;
+
+	/**
+	 * Render-time clamp bounds for virtual scroll. The scroll-box's
+	 * scroll API writes the currently-mounted children's coverage span;
+	 * render-node-to-output clamps scrollTop to stay within it.
+	 * Prevents blank screen when scrollTo races past the mounted range.
+	 * `undefined` = no clamp (sticky-scroll, cold start).
+	 */
+	scrollClampMin: number | undefined;
+	scrollClampMax: number | undefined;
+
+	/**
+	 * Total content height and viewport height, computed at render time
+	 * and stored for imperative access. Used by the drain logic and
+	 * clamp calculations.
+	 */
+	scrollHeight: number | undefined;
+	scrollViewportHeight: number | undefined;
+
+	/**
 	 * Registered event listeners keyed by event type. Populated by
 	 * {@link TuiElement.addEventListener} and read by the dispatcher
 	 * (`events/dispatcher.ts`). Defaults to an empty Map.

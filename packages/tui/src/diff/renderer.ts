@@ -338,7 +338,7 @@ function markLegacyNodesDirty(node: TuiElement): void {
  * Returns 0 when everything fits or when there are no participating
  * children.
  */
-function computeLegacyOverflowOffset(rootNode: TuiElement, terminalHeight: number): number {
+export function computeLegacyOverflowOffset(rootNode: TuiElement, terminalHeight: number): number {
 	let maxBottom = 0;
 	for (const child of rootNode.childNodes) {
 		// Skip absolute-positioned overlays; they are anchored to the

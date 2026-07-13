@@ -1,19 +1,22 @@
 /**
  * Hit testing — find the deepest node containing a terminal coordinate.
  *
- * Used by mouse event dispatch (P4 Task 27) to resolve the target node
- * from a (col, row) pair. Walks the tree depth-first, preferring
- * later-appended children so `position: absolute` overlays (appended
- * after normal-flow siblings by {@link OverlayManager}) are hit first.
+ * Primary path: uses the nodeCache populated during the paint pass (see
+ * `dom/node-cache.ts`). Each rendered node's absolute screen rect is
+ * cached, so hit-test compares directly against terminal (col, row)
+ * without computing Yoga coordinates on the fly. This is both faster
+ * and correct for scroll-box children whose painted position differs
+ * from their Yoga layout position due to the scrollTop offset.
  *
- * Coordinates: `x` / `y` are relative to the root's parent. Since the
- * root is typically the top of the tree, this is terminal screen space.
- * Each recursion subtracts the child's computed left/top so children
- * are tested in their own local space.
+ * Fallback path: when a node has no cache entry (not yet rendered, or
+ * the caller is testing a raw DOM tree without the render loop), hit-test
+ * falls back to computing Yoga coordinates on the fly. This preserves
+ * backward compatibility for tests and direct DOM usage.
  *
- * Reference: Task 25 spec (SubTask 25.4).
+ * Adapted from Claude Code's `hit-test.ts` nodeCache approach.
  */
 
+import { getNodeRect } from "../dom/node-cache.ts";
 import type { TuiElement } from "../dom/tree.ts";
 
 /**
@@ -25,33 +28,42 @@ import type { TuiElement } from "../dom/tree.ts";
  * `position: absolute` overlays appended after normal-flow siblings.
  */
 export function hitTest(root: TuiElement, x: number, y: number): TuiElement | null {
-	return hitTestNode(root, x, y);
+	const rect = getNodeRect(root);
+	if (rect !== undefined) {
+		// Cache path: compare against cached screen coordinates.
+		if (x < rect.x || x >= rect.x + rect.width || y < rect.y || y >= rect.y + rect.height) {
+			return null;
+		}
+		for (let i = root.childNodes.length - 1; i >= 0; i--) {
+			const child = root.childNodes[i]!;
+			const hit = hitTest(child, x, y);
+			if (hit !== null) return hit;
+		}
+		return root;
+	}
+	// Fallback path: compute Yoga coordinates on the fly (for tests
+	// and direct DOM usage without rendering).
+	return hitTestYoga(root, x, y);
 }
 
-function hitTestNode(node: TuiElement, x: number, y: number): TuiElement | null {
+function hitTestYoga(node: TuiElement, x: number, y: number): TuiElement | null {
 	const left = node.yogaNode.getComputedLeft();
 	const top = node.yogaNode.getComputedTop();
 	const width = node.yogaNode.getComputedWidth();
 	const height = node.yogaNode.getComputedHeight();
 
-	// Reject points outside the node's border box. Yoga positions are
-	// relative to the parent, matching the coordinate space of (x, y).
 	if (x < left || x >= left + width || y < top || y >= top + height) {
 		return null;
 	}
 
-	// Convert to node-local coordinates for child hit testing.
 	const localX = x - left;
 	const localY = y - top;
 
-	// Iterate children back to front so later-appended (top z-order)
-	// nodes are hit-tested first.
 	for (let i = node.childNodes.length - 1; i >= 0; i--) {
 		const child = node.childNodes[i]!;
-		const hit = hitTestNode(child, localX, localY);
+		const hit = hitTestYoga(child, localX, localY);
 		if (hit !== null) return hit;
 	}
 
-	// No child contains the point; the node itself is the hit.
 	return node;
 }

@@ -47,10 +47,14 @@ export interface ScrollBoxEngine {
 export interface ScrollBoxElement extends TuiElement {
 	/** Set `scrollTop`, clamped to `[0, maxScroll]`. Schedules a render. */
 	scrollTo(scrollTop: number): void;
-	/** Add `delta` to `scrollTop` (clamped). Schedules a render. */
+	/** Accumulate `delta` into `pendingScrollDelta`. The renderer drains it per frame. */
 	scrollBy(delta: number): void;
 	/** Jump to the bottom (`scrollTop = maxScroll`). Schedules a render. */
 	scrollToBottom(): void;
+	/** Set render-time clamp bounds for virtual scroll. */
+	setClampBounds(min: number | undefined, max: number | undefined): void;
+	/** Get accumulated-but-not-yet-drained delta. */
+	getPendingDelta(): number;
 }
 
 // --
@@ -92,6 +96,8 @@ export function createScrollBox(style?: Styles, engine?: ScrollBoxEngine): Scrol
 	};
 
 	node.scrollTo = (scrollTop: number): void => {
+		node.pendingScrollDelta = undefined;
+		node.stickToBottom = false;
 		const max = getMaxScroll(node);
 		node.scrollTop = Math.max(0, Math.min(scrollTop, max));
 		if (node.style.stickyScroll === true) {
@@ -101,16 +107,29 @@ export function createScrollBox(style?: Styles, engine?: ScrollBoxEngine): Scrol
 	};
 
 	node.scrollBy = (delta: number): void => {
-		node.scrollTo(node.scrollTop + delta);
+		// Accumulate in pendingScrollDelta; renderer drains it at a capped
+		// rate per frame so fast flicks show intermediate frames. Direction
+		// reversal naturally cancels (pure accumulator).
+		node.stickToBottom = false;
+		node.pendingScrollDelta = (node.pendingScrollDelta ?? 0) + Math.trunc(delta);
+		requestRender();
 	};
 
 	node.scrollToBottom = (): void => {
+		node.pendingScrollDelta = undefined;
+		node.stickToBottom = true;
 		const max = getMaxScroll(node);
 		node.scrollTop = max;
-		if (node.style.stickyScroll === true) {
-			node.stickToBottom = true;
-		}
 		requestRender();
+	};
+
+	node.setClampBounds = (min: number | undefined, max: number | undefined): void => {
+		node.scrollClampMin = min;
+		node.scrollClampMax = max;
+	};
+
+	node.getPendingDelta = (): number => {
+		return node.pendingScrollDelta ?? 0;
 	};
 
 	return node;

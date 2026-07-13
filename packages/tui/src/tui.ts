@@ -7,6 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
 import type { TuiElement } from "./dom/tree.ts";
+import type { Styles } from "./dom/types.ts";
 import type { NewOverlayHandle } from "./engine/overlay.ts";
 import { TuiEngine } from "./engine.ts";
 import { isKeyRelease, matchesKey } from "./keys.ts";
@@ -410,6 +411,14 @@ export class TUI extends Container {
 	// Last focused component synced to the new engine's FocusManager.
 	// Avoids redundant focus() calls when focusedComponent hasn't changed.
 	private lastSyncedFocus: Component | null = null;
+	// Legacy components that are hosted inside an `ink-scroll-box` rather
+	// than directly under the root. The map keeps the scroll-box node and
+	// the wrapper so callers can mutate the component's children (e.g.
+	// chat messages) while the engine renders the wrapper inside the box.
+	private scrollBoxHosts = new Map<
+		Component,
+		{ scrollBox: import("./components-new/scroll-box.ts").ScrollBoxElement; wrapper: TuiElement }
+	>();
 
 	constructor(terminal: Terminal, showHardwareCursor?: boolean) {
 		super();
@@ -922,6 +931,19 @@ export class TUI extends Container {
 					this.setFocus(restoreState.resume.target);
 				}
 			}
+		}
+
+		// When the new engine is active, route SGR mouse sequences
+		// (\x1b[<button;col;rowM/m) to it for hit-testing, DOM event
+		// dispatch, and wheel → scroll-box auto-scroll. No legacy
+		// component parses SGR sequences (only the new engine's
+		// parseMouseSequence does), so without this routing wheel events
+		// were silently dropped on the focused editor and the scroll-box
+		// never received them. Keyboard input continues through the
+		// focusedComponent path below so legacy components keep working.
+		if (this.useNewEngine && this.newEngine !== null && data.startsWith("\x1b[<")) {
+			this.newEngine.handleInput(data);
+			return;
 		}
 
 		// Pass input to focused component (including Ctrl+C)
@@ -1754,6 +1776,77 @@ export class TUI extends Container {
 	}
 
 	/**
+	 * Create a scroll-box, wrap `component` as an `ink-legacy` node inside
+	 * it, and append the scroll-box to the new engine's root.
+	 *
+	 * The component must NOT also be added via {@link addChild}; it is
+	 * hosted by the scroll-box and kept out of the legacy `children`
+	 * reconciliation. Callers can continue mutating the component itself
+	 * (e.g. adding messages to a Container) and the engine will render it
+	 * inside the scroll-box.
+	 *
+	 * Returns a handle with scroll API methods, or `undefined` when the
+	 * new engine is not enabled.
+	 */
+	createScrollBoxForComponent(
+		component: Component,
+		style?: Styles,
+	):
+		| {
+				/** The underlying `ink-scroll-box` DOM node. */
+				node: TuiElement;
+				/** Scroll by `delta` lines (clamped to content bounds). */
+				scrollBy: (delta: number) => void;
+				/** Jump to the bottom of the content. */
+				scrollToBottom: () => void;
+		  }
+		| undefined {
+		if (this.newEngine === null) return undefined;
+
+		// Reuse an existing host if the caller re-wraps the same component.
+		const existing = this.scrollBoxHosts.get(component);
+		if (existing !== undefined) {
+			return {
+				node: existing.scrollBox,
+				scrollBy: (delta: number) => existing.scrollBox.scrollBy(delta),
+				scrollToBottom: () => existing.scrollBox.scrollToBottom(),
+			};
+		}
+
+		const scrollBox = this.newEngine.createScrollBox({
+			flexDirection: "column",
+			overflow: "scroll",
+			flexGrow: 1,
+			flexShrink: 1,
+			flexBasis: "0%",
+			// Ensure the chat area never collapses to zero height when the
+			// rest of the layout is tall. A few visible lines are enough to
+			// keep the latest messages readable while still allowing the
+			// other sections to push the box up via overflow offset.
+			minHeight: 5,
+			stickyScroll: true,
+			...style,
+		});
+		const wrapper = this.newEngine.wrapComponent(component);
+		this.newEngine.appendChild(scrollBox, wrapper);
+
+		this.scrollBoxHosts.set(component, { scrollBox, wrapper });
+
+		// Add the component to the legacy children array so the scroll-box
+		// wrapper participates in child-order reconciliation. If the caller
+		// already added it, skip to avoid duplicates.
+		if (!this.children.includes(component)) {
+			this.addChild(component);
+		}
+
+		return {
+			node: scrollBox,
+			scrollBy: (delta: number) => scrollBox.scrollBy(delta),
+			scrollToBottom: () => scrollBox.scrollToBottom(),
+		};
+	}
+
+	/**
 	 * Sync the legacy `children` array into the TuiEngine's root node.
 	 *
 	 * Each legacy child component is wrapped as an `ink-legacy` DOM node
@@ -1777,6 +1870,7 @@ export class TUI extends Container {
 	private syncChildrenToEngine(): void {
 		if (this.newEngine === null) return;
 		const root = this.newEngine.rootNode;
+
 		// Remove nodes whose component is no longer in children. Iterate
 		// over a snapshot because removeChild mutates childNodes.
 		for (const existing of [...root.childNodes]) {
@@ -1791,15 +1885,39 @@ export class TUI extends Container {
 				this.bridgeWrappers.delete(component);
 			}
 		}
+
+		// Prune scroll-box hosts whose component is no longer in children.
+		for (const [component, host] of this.scrollBoxHosts) {
+			if (!this.children.includes(component)) {
+				this.newEngine.removeChild(root, host.scrollBox);
+				this.scrollBoxHosts.delete(component);
+			}
+		}
+
 		// Reconcile order: walk children in reverse, using insertBefore
 		// to move each wrapper to precede the previously-positioned one.
 		// insertBefore on an already-attached node is a move (DOM standard
 		// semantics via dom/tree.ts), so reordering works without an
-		// explicit detach.
+		// explicit detach. Components hosted in a scroll-box are represented
+		// by the scroll-box node itself in the root ordering.
 		let referenceNode: TuiElement | null = null;
 		for (let i = this.children.length - 1; i >= 0; i--) {
 			const child = this.children[i];
 			if (child === undefined) continue;
+
+			const host = this.scrollBoxHosts.get(child);
+			if (host !== undefined) {
+				// Scroll-box hosted component: order the scroll-box under root.
+				const scrollBox = host.scrollBox;
+				const isAttached = scrollBox.parentNode === root;
+				const actualNext = isAttached ? nextSiblingOf(root, scrollBox) : null;
+				if (!isAttached || actualNext !== referenceNode) {
+					this.newEngine.insertBefore(root, scrollBox, referenceNode);
+				}
+				referenceNode = scrollBox;
+				continue;
+			}
+
 			let node = this.bridgeWrappers.get(child);
 			if (node === undefined) {
 				node = this.newEngine.wrapComponent(child);
@@ -1936,11 +2054,14 @@ export class TUI extends Container {
 		// 1) Direct match: component is a top-level child.
 		const wrapperNode = this.bridgeWrappers.get(component);
 		if (wrapperNode !== undefined) return wrapperNode;
-		// 2) Overlay component.
+		// 2) Scroll-box hosted component.
+		const host = this.scrollBoxHosts.get(component);
+		if (host !== undefined) return host.wrapper;
+		// 3) Overlay component.
 		for (const [entry, handle] of this.overlayHandles) {
 			if (entry.component === component) return handle.node;
 		}
-		// 3) Nested inside a Container: walk bridgeWrappers and descend
+		// 4) Nested inside a Container: walk bridgeWrappers and descend
 		// into each Container's children tree. The nearest ancestor
 		// Container wins (shallowest depth), so that the legacyCursor
 		// captured on its wrapper is the most precise position.
@@ -1949,6 +2070,13 @@ export class TUI extends Container {
 			const depth = containerDepthOf(rootComponent, component);
 			if (depth > 0 && (best === undefined || depth < best.depth)) {
 				best = { node: rootNode, depth };
+			}
+		}
+		// 5) Nested inside a scroll-box hosted Container as well.
+		for (const [rootComponent, host] of this.scrollBoxHosts) {
+			const depth = containerDepthOf(rootComponent, component);
+			if (depth > 0 && (best === undefined || depth < best.depth)) {
+				best = { node: host.wrapper, depth };
 			}
 		}
 		return best?.node;

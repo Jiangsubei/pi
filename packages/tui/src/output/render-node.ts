@@ -40,6 +40,7 @@
  */
 
 import { renderLegacy } from "../bridge/render.ts";
+import { clearNodeCache, setNodeRect } from "../dom/node-cache.ts";
 import type { TuiElement } from "../dom/tree.ts";
 import { getMaxScroll } from "../dom/tree.ts";
 import type { Styles, TextStyles } from "../dom/types.ts";
@@ -50,6 +51,64 @@ import { Output } from "./output.ts";
 import { renderBorder } from "./render-border.ts";
 import { squashText } from "./squash-text.ts";
 import { wrapText } from "./wrap-text.ts";
+
+// --
+// Scroll drain — per-frame consumption of pendingScrollDelta
+
+/**
+ * Minimum rows applied per frame for native terminal drain. Above this,
+ * drain is proportional (~3/4 of remaining) so big bursts catch up in
+ * log₄ frames while the tail decelerates smoothly.
+ */
+const SCROLL_MIN_PER_FRAME = 4;
+
+/**
+ * Deltas at or below this threshold are applied instantly in a single
+ * frame. Avoids splitting small scrolls (single wheel tick, page down)
+ * across multiple frames. Adapted from Claude Code's
+ * `SCROLL_INSTANT_THRESHOLD`.
+ */
+const SCROLL_INSTANT_THRESHOLD = 5;
+
+/**
+ * Drain pendingScrollDelta using a proportional strategy: deltas ≤
+ * SCROLL_INSTANT_THRESHOLD are applied instantly; larger deltas use
+ * step = max(MIN, floor(abs*3/4)), capped at innerHeight-1. Remaining
+ * delta stays in pendingScrollDelta for the next frame. Adapted from
+ * Claude Code's `drainProportional` + `drainAdaptive`.
+ */
+function drainProportional(node: TuiElement, pending: number, innerHeight: number): number {
+	const abs = Math.abs(pending);
+	if (abs <= SCROLL_INSTANT_THRESHOLD) {
+		node.pendingScrollDelta = undefined;
+		return pending;
+	}
+	const cap = Math.max(1, innerHeight - 1);
+	const step = Math.min(cap, Math.max(SCROLL_MIN_PER_FRAME, (abs * 3) >> 2));
+	if (abs <= step) {
+		node.pendingScrollDelta = undefined;
+		return pending;
+	}
+	const applied = pending > 0 ? step : -step;
+	node.pendingScrollDelta = pending - applied;
+	return applied;
+}
+
+/**
+ * Set of scroll-box nodes that still have pendingScrollDelta after this
+ * frame's drain. The engine checks this after render and schedules another
+ * frame if non-empty so the drain continues.
+ */
+const scrollDrainNodes: Set<TuiElement> = new Set();
+
+/**
+ * Consume and return whether any scroll-box has remaining pending delta.
+ * The engine calls this after render to decide whether to schedule
+ * another frame.
+ */
+export function hasPendingScrollDrain(): boolean {
+	return scrollDrainNodes.size > 0;
+}
 
 // --
 // Public API
@@ -67,6 +126,8 @@ import { wrapText } from "./wrap-text.ts";
  * backward compatibility with the renderer (`diff/renderer.ts`).
  */
 export function renderNode(node: TuiElement, output: Output, rootOffsetY: number = 0): void {
+	scrollDrainNodes.clear();
+	clearNodeCache();
 	renderNodeInternal(node, output, {}, 0, rootOffsetY);
 }
 
@@ -88,6 +149,7 @@ function renderNodeInternal(
 	inheritedStyle: TextStyles,
 	offsetX: number,
 	offsetY: number,
+	skipCache = false,
 ): void {
 	const left = node.yogaNode.getComputedLeft();
 	const top = node.yogaNode.getComputedTop();
@@ -116,6 +178,15 @@ function renderNodeInternal(
 			node.legacyKittyImages = undefined;
 		}
 		return;
+	}
+
+	// Cache the screen rect for hit-test. This is the absolute screen
+	// position (after all offsets including rootOffsetY) so hit-test can
+	// compare directly against terminal (col, row). Skip for nodes rendered
+	// to a temp screen (scroll-box children) — their coordinates are in temp
+	// screen space, not main screen space.
+	if (!skipCache) {
+		setNodeRect(node, { x, y, width, height, top });
 	}
 
 	// Merge inherited style with this node's TextStyles fields.
@@ -176,7 +247,7 @@ function renderNodeInternal(
 			// Recurse children with the merged style. Hyperlink href
 			// extraction is deferred (Pi DOM has no attributes map).
 			for (const child of node.childNodes) {
-				renderNodeInternal(child, output, mergedStyle, x, y);
+				renderNodeInternal(child, output, mergedStyle, x, y, skipCache);
 			}
 			break;
 		case "ink-legacy":
@@ -195,80 +266,125 @@ function renderNodeInternal(
 			if (node.stickToBottom) {
 				node.scrollTop = getMaxScroll(node);
 			}
-			const scrollTop = node.scrollTop;
-			const maxScroll = getMaxScroll(node);
 
-			if (contentWidth > 0 && contentHeight > 0) {
-				// Compute total content height across children (max child bottom).
-				let totalChildrenHeight = 0;
+			// Compute total content height across children (max child bottom).
+			let totalChildrenHeight = 0;
+			for (const child of node.childNodes) {
+				const childBottom = child.yogaNode.getComputedTop() + child.yogaNode.getComputedHeight();
+				if (childBottom > totalChildrenHeight) {
+					totalChildrenHeight = childBottom;
+				}
+			}
+			node.scrollHeight = totalChildrenHeight;
+			node.scrollViewportHeight = contentHeight;
+			const maxScroll = Math.max(0, totalChildrenHeight - contentHeight);
+
+			// Drain pendingScrollDelta: apply a portion of the accumulated
+			// delta per frame so fast flicks show intermediate frames.
+			let cur = node.scrollTop;
+			const pending = node.pendingScrollDelta;
+			if (pending !== undefined && pending !== 0) {
+				const applied = drainProportional(node, pending, contentHeight);
+				cur += applied;
+			} else if (pending === 0) {
+				node.pendingScrollDelta = undefined;
+			}
+
+			// Clamp scrollTop to [0, maxScroll].
+			const scrollTop = Math.max(0, Math.min(cur, maxScroll));
+			node.scrollTop = scrollTop;
+
+			// If scrollTop hit the bounds, consume remaining delta.
+			if (scrollTop !== cur) {
+				node.pendingScrollDelta = undefined;
+			}
+
+			// Track if drain needs to continue next frame.
+			if (node.pendingScrollDelta !== undefined && node.pendingScrollDelta !== 0) {
+				scrollDrainNodes.add(node);
+			} else {
+				scrollDrainNodes.delete(node);
+			}
+
+			// Apply virtual-scroll clamp: if scrollTop raced past the
+			// currently-mounted range, render at the edge of mounted
+			// content instead of blank spacer. The clamped value is for
+			// this paint only; node.scrollTop retains the real target.
+			const cMin = node.scrollClampMin;
+			const cMax = node.scrollClampMax;
+			const haveClamp = cMin !== undefined && cMax !== undefined;
+			const renderScrollTop = haveClamp ? Math.max(cMin, Math.min(scrollTop, cMax)) : scrollTop;
+
+			if (contentWidth > 0 && contentHeight > 0 && totalChildrenHeight > 0) {
+				// Render only a window around the visible slice, plus an
+				// off-screen buffer above and below. This keeps long chat
+				// histories responsive because components outside the
+				// window are not rendered at all.
+				const bufferLines = 5;
+				const renderTop = renderScrollTop - bufferLines;
+				const renderBottom = renderScrollTop + contentHeight + bufferLines;
+
+				const mainScreen = output.getScreen();
+				const tempHeight = contentHeight + 2 * bufferLines;
+				const tempScreen = new Screen(contentWidth, tempHeight, {
+					charPool: mainScreen.charPool,
+					stylePool: mainScreen.stylePool,
+					hyperlinkPool: mainScreen.hyperlinkPool,
+				});
+				const tempOutput = new Output(tempScreen);
+
+				// Render children to the temp output with a vertical offset so
+				// that the visible slice starts at bufferLines in the temp
+				// screen. Skip children that fall completely outside the
+				// render window.
+				const offsetY = bufferLines - renderScrollTop;
 				for (const child of node.childNodes) {
-					const childBottom = child.yogaNode.getComputedTop() + child.yogaNode.getComputedHeight();
-					if (childBottom > totalChildrenHeight) {
-						totalChildrenHeight = childBottom;
+					const childTop = Math.round(child.yogaNode.getComputedTop());
+					const childHeight = Math.round(child.yogaNode.getComputedHeight());
+					const childBottom = childTop + childHeight;
+					if (childBottom < renderTop || childTop > renderBottom) {
+						continue;
+					}
+					renderNodeInternal(child, tempOutput, mergedStyle, 0, offsetY, true);
+				}
+				tempOutput.flush();
+
+				// Blit the visible slice from the temp screen to the main
+				// output. The slice starts at bufferLines in the temp screen.
+				for (let dy = 0; dy < contentHeight; dy++) {
+					const sy = bufferLines + dy;
+					if (sy < 0 || sy >= tempScreen.height) continue;
+					for (let dx = 0; dx < contentWidth; dx++) {
+						const cell = tempScreen.getCell(dx, sy);
+						// Skip empty cells (no content and no style) to avoid
+						// needlessly queueing operations for blank cells.
+						if (cell.char === " " && cell.styleId === 0) continue;
+						output.writeText(contentX + dx, contentY + dy, cell.char, cell.styleId);
 					}
 				}
 
-				if (totalChildrenHeight > 0) {
-					// Allocate a temp screen large enough to hold all children,
-					// sharing pools with the main screen so interned style IDs
-					// resolve correctly when cells are blitted back.
-					const mainScreen = output.getScreen();
-					const tempScreen = new Screen(contentWidth, Math.max(contentHeight, totalChildrenHeight), {
-						charPool: mainScreen.charPool,
-						stylePool: mainScreen.stylePool,
-						hyperlinkPool: mainScreen.hyperlinkPool,
-					});
-					const tempOutput = new Output(tempScreen);
-
-					// Render children to the temp output at offset (0, 0).
-					// Children's yoga positions are relative to the scroll-box
-					// content area, so they paint at their natural positions in
-					// the temp screen.
-					for (const child of node.childNodes) {
-						renderNodeInternal(child, tempOutput, mergedStyle, 0, 0);
+				// Render ↑N more indicator at top-right if renderScrollTop > 0.
+				if (renderScrollTop > 0) {
+					const indicator = `\u2191${Math.round(renderScrollTop)} more`;
+					const indicatorWidth = visibleWidth(indicator);
+					if (indicatorWidth <= contentWidth) {
+						const dimStyle: TextStyles = { ...mergedStyle, dim: true };
+						const styleId = output.internStyle(dimStyle);
+						output.writeText(contentX + contentWidth - indicatorWidth, contentY, indicator, styleId);
 					}
-					tempOutput.flush();
+				}
 
-					// Blit the visible slice [scrollTop, scrollTop + contentHeight)
-					// from the temp screen to the main output. Each cell is
-					// written via output.writeText so it enters the operation
-					// queue and flushes in order with the rest of the frame.
-					const visibleRows = Math.min(contentHeight, Math.max(0, totalChildrenHeight - scrollTop));
-					for (let dy = 0; dy < visibleRows; dy++) {
-						const sy = scrollTop + dy;
-						if (sy < 0 || sy >= tempScreen.height) continue;
-						for (let dx = 0; dx < contentWidth; dx++) {
-							const cell = tempScreen.getCell(dx, sy);
-							// Skip empty cells (no content and no style) to avoid
-							// needlessly queueing operations for blank cells.
-							if (cell.char === " " && cell.styleId === 0) continue;
-							output.writeText(contentX + dx, contentY + dy, cell.char, cell.styleId);
-						}
-					}
-
-					// Render ↑N more indicator at top-right if scrollTop > 0.
-					if (scrollTop > 0) {
-						const indicator = `\u2191${scrollTop} more`;
-						const indicatorWidth = visibleWidth(indicator);
-						if (indicatorWidth <= contentWidth) {
-							const dimStyle: TextStyles = { ...mergedStyle, dim: true };
-							const styleId = output.internStyle(dimStyle);
-							output.writeText(contentX + contentWidth - indicatorWidth, contentY, indicator, styleId);
-						}
-					}
-
-					// Render ↓N more indicator at bottom-right if scrollTop < maxScroll.
-					if (scrollTop < maxScroll) {
-						const remaining = maxScroll - scrollTop;
-						const indicator = `\u2193${remaining} more`;
-						const indicatorWidth = visibleWidth(indicator);
-						if (indicatorWidth <= contentWidth) {
-							const dimStyle: TextStyles = { ...mergedStyle, dim: true };
-							const styleId = output.internStyle(dimStyle);
-							const ix = contentX + contentWidth - indicatorWidth;
-							const iy = contentY + contentHeight - 1;
-							output.writeText(ix, iy, indicator, styleId);
-						}
+				// Render ↓N more indicator at bottom-right if renderScrollTop < maxScroll.
+				if (renderScrollTop < maxScroll) {
+					const remaining = Math.round(maxScroll - renderScrollTop);
+					const indicator = `\u2193${remaining} more`;
+					const indicatorWidth = visibleWidth(indicator);
+					if (indicatorWidth <= contentWidth) {
+						const dimStyle: TextStyles = { ...mergedStyle, dim: true };
+						const styleId = output.internStyle(dimStyle);
+						const ix = contentX + contentWidth - indicatorWidth;
+						const iy = contentY + contentHeight - 1;
+						output.writeText(ix, iy, indicator, styleId);
 					}
 				}
 			}
@@ -277,7 +393,7 @@ function renderNodeInternal(
 		// ink-box, ink-root, and any unknown container: recurse children.
 		default:
 			for (const child of node.childNodes) {
-				renderNodeInternal(child, output, mergedStyle, x, y);
+				renderNodeInternal(child, output, mergedStyle, x, y, skipCache);
 			}
 			break;
 	}

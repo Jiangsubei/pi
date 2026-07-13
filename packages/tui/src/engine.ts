@@ -23,8 +23,7 @@
 
 import { wrapComponent } from "./bridge/adapter.ts";
 import { createScrollBox, type ScrollBoxElement } from "./components-new/scroll-box.ts";
-import type { Renderer } from "./diff/renderer.ts";
-import { createRenderer } from "./diff/renderer.ts";
+import { computeLegacyOverflowOffset, createRenderer, type Renderer } from "./diff/renderer.ts";
 import type { TuiElement } from "./dom/tree.ts";
 import { appendChild, createNode, insertBefore, removeChild } from "./dom/tree.ts";
 import type { NodeName, Styles } from "./dom/types.ts";
@@ -38,6 +37,7 @@ import { KeyboardEvent, MouseEvent } from "./events/synthetic-event.ts";
 import type { HighlightBuilder, HighlightPredicate } from "./highlight.ts";
 import { parseKey } from "./keys.ts";
 import { LayoutEdge } from "./layout/node.ts";
+import { hasPendingScrollDrain } from "./output/render-node.ts";
 import type { Screen } from "./screen/screen.ts";
 import { SearchHighlight } from "./search-highlight.ts";
 import { SelectionManager } from "./selection.ts";
@@ -402,7 +402,7 @@ export class TuiEngine {
 	 * set) so callers can fall back to the keybinding system.
 	 */
 	handleInput(data: string): void {
-		// SGR mouse sequence: \x1b[<button;col;row;M/m
+		// SGR mouse sequence: \x1b[<button;col;rowM/m
 		if (data.startsWith("\x1b[<")) {
 			this.handleMouseInput(data);
 			return;
@@ -509,6 +509,32 @@ export class TuiEngine {
 		mouseEvent.target = target;
 		dispatchEvent(target, mouseEvent);
 
+		// Auto-scroll scroll-boxes on mouse wheel. If no listener called
+		// preventDefault(), find the nearest ink-scroll-box ancestor of
+		// the hit-tested target and scroll it by a few lines per wheel
+		// tick. This gives scroll-boxes wheel support without forcing
+		// every caller to attach its own mousewheel listener.
+		if (mouseEvent.type === "mousewheel" && !mouseEvent.defaultPrevented) {
+			let scrollBox: TuiElement | undefined = target;
+			while (scrollBox !== undefined) {
+				if (scrollBox.nodeName === "ink-scroll-box") break;
+				scrollBox = scrollBox.parentNode;
+			}
+			// Fallback: if the wheel happened outside any scroll-box (e.g. on
+			// a fixed footer or editor), scroll the first root-level
+			// scroll-box. This matches Claude Code's behavior where the entire
+			// screen above the bottom bar is one scrollable waterfall.
+			if (scrollBox === undefined) {
+				scrollBox = [...this.rootNode.childNodes].find((n) => n.nodeName === "ink-scroll-box");
+			}
+			if (scrollBox !== undefined) {
+				const delta = mouseEvent.deltaY;
+				if (delta !== 0) {
+					(scrollBox as ScrollBoxElement).scrollBy(delta * 3);
+				}
+			}
+		}
+
 		// Synthesize a click event after mouseup on the same target as
 		// the preceding mousedown. Mirrors browser behavior.
 		if (mouseEvent.type === "mousedown") {
@@ -573,7 +599,9 @@ export class TuiEngine {
 	 */
 	private renderLoop(): void {
 		this.renderScheduled = false;
-		if (!this.running) return;
+		if (!this.running) {
+			return;
+		}
 		// P5 Task 32.4: StylePool/CharPool generational GC. The pools
 		// are created per-frame inside the renderer (each `new Screen`
 		// allocates fresh pools), so the TuiEngine does not own a
@@ -587,6 +615,11 @@ export class TuiEngine {
 		this.terminal.write(output);
 		this.emitKittyImages();
 		this.positionImeCursor();
+		// If any scroll-box still has pending delta to drain, schedule
+		// another frame so the drain continues at a smooth rate.
+		if (hasPendingScrollDrain()) {
+			this.requestRender();
+		}
 	}
 
 	/**
@@ -640,7 +673,9 @@ export class TuiEngine {
 			this.terminal.write("\x1b[?25l");
 			return;
 		}
-		const origin = this.computeNodeContentOrigin(active);
+		// Use the focused node's rendered content origin, which accounts
+		// for root overflow emulation and scroll-box scroll offsets.
+		const origin = this.computeRenderedContentOrigin(active);
 		const cursorX = origin.x + active.legacyCursor.col;
 		const cursorY = origin.y + active.legacyCursor.row;
 		// CUP (Cursor Position) is 1-indexed: \x1b[{row};{col}H.
@@ -778,5 +813,51 @@ export class TuiEngine {
 		const paddingLeft = node.yogaNode.getComputedPadding(LayoutEdge.Left);
 		const paddingTop = node.yogaNode.getComputedPadding(LayoutEdge.Top);
 		return { x: absX + borderLeft + paddingLeft, y: absY + borderTop + paddingTop };
+	}
+
+	/**
+	 * Compute the rendered screen position of a node's content origin,
+	 * accounting for transforms that happen during paint but are not
+	 * reflected in Yoga's computed positions.
+	 *
+	 * Two transforms are applied:
+	 *   1. Legacy overflow/root scroll emulation: when the laid-out tree
+	 *      exceeds the terminal height, the renderer shifts the whole
+	 *      painted frame up by `overflowOffset` rows so the bottom stays
+	 *      visible. Non-absolute-positioned nodes participate in this
+	 *      shift; absolute overlays do not.
+	 *   2. Scroll-box scroll offsets: each `ink-scroll-box` ancestor
+	 *      translates its children by `-scrollTop` when blitting the
+	 *      visible slice.
+	 */
+	private computeRenderedContentOrigin(node: TuiElement): { x: number; y: number } {
+		const origin = this.computeNodeContentOrigin(node);
+
+		// 1. Legacy root overflow offset.
+		let isAbsolute = false;
+		let current: TuiElement | undefined = node;
+		while (current !== undefined) {
+			if (current.style.position === "absolute") {
+				isAbsolute = true;
+				break;
+			}
+			current = current.parentNode;
+		}
+		if (!isAbsolute) {
+			const overflowOffset = computeLegacyOverflowOffset(this.rootNode, this.terminal.rows);
+			origin.y -= overflowOffset;
+		}
+
+		// 2. Scroll-box scroll offsets along the parent chain.
+		current = node;
+		while (current !== undefined && current !== this.rootNode) {
+			const parent: TuiElement | undefined = current.parentNode;
+			if (parent?.nodeName === "ink-scroll-box") {
+				origin.y -= parent.scrollTop;
+			}
+			current = parent;
+		}
+
+		return origin;
 	}
 }
