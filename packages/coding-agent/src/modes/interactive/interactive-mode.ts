@@ -473,6 +473,22 @@ export class InteractiveMode {
 			await this.rebindCurrentSession({ renderBeforeBind: true });
 		});
 		this.version = VERSION;
+		// P5 Task 34.1-34.4: the legacy TUI class is retained as a thin
+		// wrapper around TuiEngine (Yoga-backed flex engine). Setting
+		// PI_USE_NEW_TUI_ENGINE=1 enables the new engine via
+		// TUI.renderWithNewEngine → syncChildrenToEngine /
+		// syncOverlaysToEngine / syncFocusToEngine, which wrap each
+		// Component via wrapComponent and sync overlay/focus state to
+		// engine.overlayManager / engine.focusManager. A direct migration
+		// (bypassing the TUI class) was evaluated as high-risk due to the
+		// deep integration with Container.addChild/removeChild,
+		// setFocus(Component), showOverlay/hideOverlay, and
+		// addInputListener APIs — deferred. The thin wrapper keeps the
+		// coding-agent unchanged while exercising the new engine.
+		// TODO(34.1-34.4): migrate interactive-mode to use TuiEngine
+		// directly (engine.wrapComponent + engine.appendChild instead of
+		// ui.addChild; engine.focusNode instead of ui.setFocus;
+		// engine.showOverlay instead of ui.showOverlay).
 		this.ui = new TUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor());
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
 		this.headerContainer = new Container();

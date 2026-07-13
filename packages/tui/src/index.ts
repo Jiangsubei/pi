@@ -8,6 +8,9 @@ export {
 	CombinedAutocompleteProvider,
 	type SlashCommand,
 } from "./autocomplete.ts";
+// Bidirectional text (RTL) support
+export { type BaseDirection, getBaseDirection, reorderVisual, stripBidiControls, type VisualChar } from "./bidi.ts";
+export { wrapComponent } from "./bridge/adapter.ts";
 // Components
 export { Box } from "./components/box.ts";
 export { CancellableLoader } from "./components/cancellable-loader.ts";
@@ -27,8 +30,44 @@ export { type SettingItem, SettingsList, type SettingsListTheme } from "./compon
 export { Spacer } from "./components/spacer.ts";
 export { Text } from "./components/text.ts";
 export { TruncatedText } from "./components/truncated-text.ts";
+export { createApp } from "./components-new/app.ts";
+export { createBox } from "./components-new/box.ts";
+export { createScrollBox, type ScrollBoxElement } from "./components-new/scroll-box.ts";
+export { createText } from "./components-new/text.ts";
+export { LogUpdate } from "./diff/log-update.ts";
+export { createRenderer, type Renderer } from "./diff/renderer.ts";
+export { applyStyles } from "./dom/apply-styles.ts";
+export {
+	appendChild,
+	createNode,
+	markDirty,
+	removeChild,
+	setStyle,
+	setTextContent,
+	TuiElement,
+} from "./dom/tree.ts";
+export type {
+	Ansi256Color,
+	AnsiColor,
+	BorderStyle,
+	Color,
+	HexColor,
+	RGBColor,
+	Styles,
+	TextStyles,
+} from "./dom/types.ts";
 // Editor component interface (for custom editors)
 export type { EditorComponent } from "./editor-component.ts";
+export {
+	cancelAnimationFrame,
+	type FrameRequestCallback,
+	flushAnimationFrames,
+	hasPendingFrames,
+	requestAnimationFrame,
+} from "./engine/animation.ts";
+export { FocusManager } from "./engine/focus.ts";
+export { type NewOverlayHandle, OverlayManager } from "./engine/overlay.ts";
+export { TuiEngine } from "./engine.ts";
 // Fuzzy matching
 export { type FuzzyMatch, fuzzyFilter, fuzzyMatch } from "./fuzzy.ts";
 // Keybindings
@@ -57,6 +96,14 @@ export {
 	parseKey,
 	setKittyProtocolActive,
 } from "./keys.ts";
+// New Yoga-backed TUI engine (P1+)
+export { applyTextStyles, colorizeBg, colorizeFg } from "./output/colorize.ts";
+export { Output } from "./output/output.ts";
+export { renderBorder } from "./output/render-border.ts";
+export { renderNode } from "./output/render-node.ts";
+export { type Cell, type CellStyle, EMPTY_CELL, WIDE_CELL_PLACEHOLDER } from "./screen/cell.ts";
+export { CharPool, type HyperlinkEntry, HyperlinkPool, StylePool } from "./screen/pool.ts";
+export { Screen } from "./screen/screen.ts";
 // Input buffering for batch splitting
 export { StdinBuffer, type StdinBufferEventMap, type StdinBufferOptions } from "./stdin-buffer.ts";
 // Terminal interface and implementations

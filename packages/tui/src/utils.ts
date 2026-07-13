@@ -4,6 +4,29 @@ import { eastAsianWidth } from "get-east-asian-width";
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const wordSegmenter = new Intl.Segmenter(undefined, { granularity: "word" });
 
+// --
+// Size value parsing (shared between tui.ts and engine/overlay.ts)
+
+/** Value that can be absolute (number) or percentage (string like "50%"). */
+export type SizeValue = number | `${number}%`;
+
+/**
+ * Parse a {@link SizeValue} into absolute value given a reference size.
+ * Returns `undefined` for malformed percentage strings.
+ *
+ * Shared by `tui.ts` (legacy overlay compositing) and `engine/overlay.ts`
+ * (new Yoga-backed overlay manager). Previously duplicated in both modules.
+ */
+export function parseSizeValue(value: SizeValue | undefined, referenceSize: number): number | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value === "number") return value;
+	const match = value.match(/^(\d+(?:\.\d+)?)%$/);
+	if (match) {
+		return Math.floor((referenceSize * parseFloat(match[1])) / 100);
+	}
+	return undefined;
+}
+
 /**
  * Get the shared grapheme segmenter instance.
  */

@@ -6,6 +6,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
+import type { TuiElement } from "./dom/tree.ts";
+import type { NewOverlayHandle } from "./engine/overlay.ts";
+import { TuiEngine } from "./engine.ts";
 import { isKeyRelease, matchesKey } from "./keys.ts";
 import type { Terminal } from "./terminal.ts";
 import {
@@ -16,7 +19,15 @@ import {
 	type TerminalColorScheme,
 } from "./terminal-colors.ts";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.ts";
-import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.ts";
+import {
+	extractSegments,
+	normalizeTerminalOutput,
+	parseSizeValue,
+	type SizeValue,
+	sliceByColumn,
+	sliceWithWidth,
+	visibleWidth,
+} from "./utils.ts";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 
@@ -50,11 +61,11 @@ function parseKittyImageHeader(line: string): KittyImageHeader | undefined {
 	return { ids, rows };
 }
 
-function extractKittyImageIds(line: string): number[] {
+export function extractKittyImageIds(line: string): number[] {
 	return parseKittyImageHeader(line)?.ids ?? [];
 }
 
-function extractKittyImageRows(line: string): number {
+export function extractKittyImageRows(line: string): number {
 	return parseKittyImageHeader(line)?.rows ?? 1;
 }
 
@@ -145,23 +156,28 @@ export interface OverlayMargin {
 	left?: number;
 }
 
-/** Value that can be absolute (number) or percentage (string like "50%") */
-export type SizeValue = number | `${number}%`;
+/** Value that can be absolute (number) or percentage (string like "50%"). Re-exported from `./utils.ts`. */
+export type { SizeValue } from "./utils.ts";
 
-/** Parse a SizeValue into absolute value given a reference size */
-function parseSizeValue(value: SizeValue | undefined, referenceSize: number): number | undefined {
-	if (value === undefined) return undefined;
-	if (typeof value === "number") return value;
-	// Parse percentage string like "50%"
-	const match = value.match(/^(\d+(?:\.\d+)?)%$/);
-	if (match) {
-		return Math.floor((referenceSize * parseFloat(match[1])) / 100);
-	}
-	return undefined;
-}
+// `parseSizeValue` is imported from `./utils.ts` (see import block above)
+// for internal use by `resolveOverlayLayout`. It is not part of the public
+// API; callers that need it should import directly from `./utils.ts`.
 
 function isTermuxSession(): boolean {
 	return Boolean(process.env.TERMUX_VERSION);
+}
+
+/**
+ * Return the next sibling of `node` under `parent`, or `null` if `node`
+ * is the last child (or not a child of `parent`).
+ *
+ * Used by {@link TUI.syncChildrenToEngine} to detect when a wrapper is
+ * already in the correct position so the write can be skipped.
+ */
+function nextSiblingOf(parent: TuiElement, node: TuiElement): TuiElement | null {
+	const idx = parent.childNodes.indexOf(node);
+	if (idx === -1 || idx + 1 >= parent.childNodes.length) return null;
+	return parent.childNodes[idx + 1]!;
 }
 
 /**
@@ -290,7 +306,15 @@ export class Container implements Component {
 }
 
 /**
- * TUI - Main class for managing terminal UI with differential rendering
+ * TUI - Main class for managing terminal UI with differential rendering.
+ *
+ * @deprecated P5 Task 34: replaced by {@link TuiEngine} (Yoga-backed
+ * flex layout engine in `./engine.ts`). The legacy `TUI` class is kept
+ * for reference and is no longer maintained — new code should use
+ * `TuiEngine` via `PI_USE_NEW_TUI_ENGINE=1`. The bridge layer
+ * (`./bridge/`) wraps legacy {@link Component}s as `ink-legacy` DOM
+ * nodes so they continue to render under the new engine without
+ * modification.
  */
 export class TUI extends Container {
 	public terminal: Terminal;
@@ -325,11 +349,30 @@ export class TUI extends Container {
 	private overlayStack: OverlayStackEntry[] = [];
 	private overlayFocusRestore: OverlayFocusRestoreState = { status: "inactive" };
 
+	// New Yoga-backed engine (optional, enabled by PI_USE_NEW_TUI_ENGINE=1).
+	// When enabled, doRender delegates to renderWithNewEngine instead of the
+	// legacy differential rendering path. Overlays and focus are synced into
+	// the new engine's OverlayManager / FocusManager; Kitty image handling is
+	// deferred (see renderWithNewEngine).
+	private newEngine: TuiEngine | null = null;
+	private useNewEngine: boolean = process.env.PI_USE_NEW_TUI_ENGINE === "1";
+	private bridgeWrappers: WeakMap<Component, TuiElement> = new WeakMap();
+	// Map of legacy overlay stack entries to new engine overlay handles.
+	// Kept in sync with overlayStack by syncOverlaysToEngine.
+	private overlayHandles: Map<OverlayStackEntry, NewOverlayHandle> = new Map();
+	// Last focused component synced to the new engine's FocusManager.
+	// Avoids redundant focus() calls when focusedComponent hasn't changed.
+	private lastSyncedFocus: Component | null = null;
+
 	constructor(terminal: Terminal, showHardwareCursor?: boolean) {
 		super();
 		this.terminal = terminal;
 		if (showHardwareCursor !== undefined) {
 			this.showHardwareCursor = showHardwareCursor;
+		}
+		if (this.useNewEngine) {
+			this.newEngine = new TuiEngine(this.terminal);
+			this.newEngine.start();
 		}
 	}
 
@@ -639,6 +682,15 @@ export class TUI extends Container {
 			() => this.requestRender(),
 		);
 		this.terminal.hideCursor();
+		// Restart the new Yoga-backed engine if it was previously stopped
+		// via {@link stop}. Without this, `newEngine.running` stays `false`
+		// and {@link TuiEngine.requestRender} short-circuits forever, leaving
+		// the screen dead after a stop→start cycle (e.g. config hot reload).
+		// The engine's {@link TuiEngine.start} is idempotent, so this is a
+		// no-op on first start.
+		if (this.useNewEngine && this.newEngine !== null && !this.newEngine.isRunning()) {
+			this.newEngine.start();
+		}
 		if (this.terminalColorSchemeNotificationsEnabled) {
 			this.terminal.write("\x1b[?2031h");
 		}
@@ -686,6 +738,9 @@ export class TUI extends Container {
 
 	stop(): void {
 		this.stopped = true;
+		if (this.newEngine !== null) {
+			this.newEngine.stop();
+		}
 		if (this.renderTimer) {
 			clearTimeout(this.renderTimer);
 			this.renderTimer = undefined;
@@ -1253,6 +1308,13 @@ export class TUI extends Container {
 
 	private doRender(): void {
 		if (this.stopped) return;
+		// New engine path: when enabled, delegate rendering to TuiEngine.
+		// Throttling is already applied by requestRender/scheduleRender before
+		// reaching doRender, so no additional throttle is needed here.
+		if (this.useNewEngine && this.newEngine !== null) {
+			this.renderWithNewEngine();
+			return;
+		}
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
 		const widthChanged = this.previousWidth !== 0 && this.previousWidth !== width;
@@ -1617,6 +1679,200 @@ export class TUI extends Container {
 		this.previousKittyImageIds = this.collectKittyImageIds(newLines);
 		this.previousWidth = width;
 		this.previousHeight = height;
+	}
+
+	/**
+	 * Render via the new Yoga-backed engine.
+	 *
+	 * Syncs the legacy children/overlay/focus state into the TuiEngine's
+	 * DOM tree, then triggers a single render pass. Overlay compositing is
+	 * handled by the new engine's renderer via `position: absolute` styles.
+	 *
+	 * Kitty image handling is done in {@link TuiEngine.emitKittyImages}
+	 * (P5 Task 34.5), which runs after the cell-based diff output is
+	 * written. The bridge paint pass ({@link renderLegacy}) detects
+	 * Kitty image lines, stores the raw bytes on
+	 * {@link TuiElement.legacyKittyImages}, and skips writing them to
+	 * the cell-based Screen. {@link TuiEngine.emitKittyImages} then
+	 * walks the DOM tree, emits the raw APC sequences at the correct
+	 * screen positions, and deletes stale images via
+	 * {@link deleteKittyImage} when IDs are removed or moved.
+	 */
+	private renderWithNewEngine(): void {
+		if (this.newEngine === null) return;
+		this.syncChildrenToEngine();
+		this.syncOverlaysToEngine();
+		this.syncFocusToEngine();
+		this.newEngine.requestRender();
+	}
+
+	/**
+	 * Sync the legacy `children` array into the TuiEngine's root node.
+	 *
+	 * Each legacy child component is wrapped as an `ink-legacy` DOM node
+	 * (see {@link bridgeWrappers}). On each sync:
+	 * - Removes wrapper nodes whose component is no longer in `children`.
+	 * - Appends wrapper nodes for new children.
+	 * - Reorders existing wrappers in place to match the current
+	 *   `children` order (handles `splice`, `reverse`, index assignment,
+	 *   and other in-place mutations).
+	 *
+	 * Wrapper nodes are cached in {@link bridgeWrappers} so a component
+	 * that is removed and re-added reuses its existing wrapper (and Yoga
+	 * layout node).
+	 *
+	 * Reconciliation walks `children` in reverse and uses
+	 * {@link TuiEngine.insertBefore} to move each wrapper to its target
+	 * position. The actual-next-sibling check skips writes for wrappers
+	 * already in the correct position, keeping the steady state O(n) with
+	 * zero DOM/Yoga mutations when nothing has moved.
+	 */
+	private syncChildrenToEngine(): void {
+		if (this.newEngine === null) return;
+		const root = this.newEngine.rootNode;
+		// Remove nodes whose component is no longer in children. Iterate
+		// over a snapshot because removeChild mutates childNodes.
+		for (const existing of [...root.childNodes]) {
+			const component = existing.component;
+			if (component !== undefined && !this.children.includes(component)) {
+				this.newEngine.removeChild(root, existing);
+			}
+		}
+		// Reconcile order: walk children in reverse, using insertBefore
+		// to move each wrapper to precede the previously-positioned one.
+		// insertBefore on an already-attached node is a move (DOM standard
+		// semantics via dom/tree.ts), so reordering works without an
+		// explicit detach.
+		let referenceNode: TuiElement | null = null;
+		for (let i = this.children.length - 1; i >= 0; i--) {
+			const child = this.children[i];
+			if (child === undefined) continue;
+			let node = this.bridgeWrappers.get(child);
+			if (node === undefined) {
+				node = this.newEngine.wrapComponent(child);
+				this.bridgeWrappers.set(child, node);
+			}
+			// Compute the wrapper's current next sibling under root, so we
+			// can skip the write when the position is already correct.
+			// Unattached wrappers (actualNext === null even when referenceNode
+			// is also null) must always be inserted, so we OR with the
+			// attached check.
+			const isAttached = node.parentNode === root;
+			const actualNext = isAttached ? nextSiblingOf(root, node) : null;
+			if (!isAttached || actualNext !== referenceNode) {
+				this.newEngine.insertBefore(root, node, referenceNode);
+			}
+			referenceNode = node;
+		}
+	}
+
+	/**
+	 * Sync the legacy overlay stack into the TuiEngine's OverlayManager.
+	 *
+	 * Maintains {@link overlayHandles} mapping each legacy
+	 * {@link OverlayStackEntry} to a {@link NewOverlayHandle}. On each
+	 * sync:
+	 * - Entries no longer in `overlayStack` have their handle `hide()`d.
+	 * - New entries are shown via `newEngine.showOverlay()` in stack
+	 *   order, so z-order (DOM child order) matches insertion order.
+	 * - Existing entries have their `hidden` state synced via
+	 *   `handle.setHidden()`.
+	 *
+	 * The overlay matching `focusedComponent` (if any) gets
+	 * `handle.focus()` so the OverlayManager's local `focusedId` tracks
+	 * the legacy focus. `handle.focus()` also reorders DOM children to
+	 * bring the focused overlay to the visual front, matching the
+	 * legacy `compositeOverlays` behavior where re-focus bumps
+	 * `focusOrder` and lifts the overlay visually.
+	 */
+	private syncOverlaysToEngine(): void {
+		if (this.newEngine === null) return;
+
+		// Remove handles for entries no longer in the stack.
+		for (const [entry, handle] of this.overlayHandles) {
+			if (!this.overlayStack.includes(entry)) {
+				handle.hide();
+				this.overlayHandles.delete(entry);
+			}
+		}
+
+		// Add handles for new entries; sync hidden state for existing ones.
+		// Iterate in stack order so new overlays append in z-order (later = top).
+		for (const entry of this.overlayStack) {
+			const existing = this.overlayHandles.get(entry);
+			if (existing === undefined) {
+				const handle = this.newEngine.showOverlay(entry.component, entry.options ?? {});
+				this.overlayHandles.set(entry, handle);
+			} else if (existing.isHidden() !== entry.hidden) {
+				existing.setHidden(entry.hidden);
+			}
+		}
+
+		// Sync which overlay is locally focused in the OverlayManager.
+		const focusedEntry = this.overlayStack.find((e) => e.component === this.focusedComponent);
+		if (focusedEntry !== undefined) {
+			const handle = this.overlayHandles.get(focusedEntry);
+			if (handle !== undefined && !handle.isHidden() && !handle.isFocused()) {
+				handle.focus();
+			}
+		}
+	}
+
+	/**
+	 * Sync the legacy focusedComponent into the TuiEngine's FocusManager.
+	 *
+	 * Tracks {@link lastSyncedFocus} to avoid redundant `focus()` calls
+	 * when `focusedComponent` hasn't changed between render passes. When
+	 * the focus changes:
+	 * - Resolves the focused component to its backing TuiElement via
+	 *   {@link findComponentNodeInEngine} (checks bridgeWrappers for
+	 *   direct children, then overlayHandles for overlay components).
+	 * - If a node is found, calls `focusManager.focus(node)`, which
+	 *   blurs the previous active element and syncs the `focused` field
+	 *   on the wrapped Focusable component.
+	 * - If no node is found (component is null or nested inside a
+	 *   Container without its own DOM node), calls `focusManager.blur()`
+	 *   to clear the active element.
+	 *
+	 * Limitation: components nested inside a Container don't have their
+	 * own DOM node in the new engine (they are rendered as lines within
+	 * the Container's `ink-legacy` wrapper). The FocusManager can only
+	 * focus DOM nodes, so nested component focus cannot be tracked. The
+	 * legacy `focused` field is still set by {@link setFocus}, so
+	 * CURSOR_MARKER emission still works — only the new engine's IME
+	 * cursor positioning (which reads `focusManager.getActiveElement()`)
+	 * is affected for nested components.
+	 */
+	private syncFocusToEngine(): void {
+		if (this.newEngine === null) return;
+		if (this.focusedComponent === this.lastSyncedFocus) return;
+
+		const focusManager = this.newEngine.getFocusManager();
+		const node = this.findComponentNodeInEngine(this.focusedComponent);
+		if (node !== undefined) {
+			focusManager.focus(node);
+		} else {
+			focusManager.blur();
+		}
+		this.lastSyncedFocus = this.focusedComponent;
+	}
+
+	/**
+	 * Find the backing {@link TuiElement} for a component in the new engine.
+	 *
+	 * Checks {@link bridgeWrappers} (direct children of the root) first,
+	 * then {@link overlayHandles} (overlay components). Returns
+	 * `undefined` if the component is null or has no DOM node in the new
+	 * engine (e.g. nested inside a Container).
+	 */
+	private findComponentNodeInEngine(component: Component | null): TuiElement | undefined {
+		if (component === null) return undefined;
+		const wrapperNode = this.bridgeWrappers.get(component);
+		if (wrapperNode !== undefined) return wrapperNode;
+		for (const [entry, handle] of this.overlayHandles) {
+			if (entry.component === component) return handle.node;
+		}
+		return undefined;
 	}
 
 	/**
